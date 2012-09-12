@@ -3,7 +3,7 @@
 # (c) Genome Research Ltd
 # Author gmpc@sanger.ac.uk
 
-__version__="0.7"
+__version__="0.8"
 
 """ This program copies a directory tree in parallel.
 
@@ -112,7 +112,7 @@ bsub -R "span[ptile=1]" -oo logfile.txt -n 4  mpirun pcp ... """)
 
 
 def Abort():
-    MPI.Finalize()
+    MPI.COMM_WORLD.Abort(1)
     exit (1)
 
 
@@ -122,9 +122,9 @@ def sanitycheck(sourcedir,destdir,workers):
     max_nfs_parallel=5
     for path in sourcedir,destdir:
         fullpath=os.path.realpath(path)
-        if fullpath.startswith("/nfs") and workers >= max_nfs_parallel:
+        if fullpath.startswith("/nfs") and workers > max_nfs_parallel:
             print
-            print "ERROR: attempting to copy to /nfs directory with more than %i tasks" %max_nfs_parallel
+            print "ERROR: attempting to copy to /nfs directory with more than %i tasks." %max_nfs_parallel
             print "Please lower the amount of parallelism."
             print
             Abort()
@@ -392,8 +392,6 @@ LSTRIPE=args.l       # preserve lustre information
 
 
 # Init MPI
-
-
 comm=MPI.COMM_WORLD
 rank=comm.Get_rank()
 workers=comm.size
@@ -453,12 +451,11 @@ try:
         MPI.Finalize()
         exit(0)
 
-# We need to customize the global exception hander to call
-# MPI ABORT in our exception handler, otherwise the other
-# MPI processes spin forever.
+# We need to call MPI ABORT in our exception handler,
+# otherwise the other MPI processes spin forever.
 except Exception,err:
     print err
     print traceback.print_tb(sys.exc_info()[2])
-    MPI.COMM_WORLD.Abort(1)
+    Abort()
 
 
