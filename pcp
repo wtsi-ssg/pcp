@@ -111,23 +111,10 @@ bsub -R "span[ptile=1]" -oo logfile.txt -n 4  mpirun pcp ... """)
     return(args)
 
 
-def Abort():
-    MPI.Finalize()
-    exit (1)
-
-
-def sanitycheck(sourcedir,destdir,workers):
+def sanitycheck(sourcedir,destdir):
     # Add some sanity check to stop people from running
     # large parallel copies on NFS or warehouse.
-    max_nfs_parallel=5
-    for path in sourcedir,destdir:
-        fullpath=os.path.realpath(path)
-        if fullpath.startswith("/nfs") and workers >= max_nfs_parallel:
-            print
-            print "ERROR: attempting to copy to /nfs directory with more than %i tasks" %max_nfs_parallel
-            print "Please lower the amount of parallelism."
-            print
-            Abort()
+    pass
 
 
 def scantree(sourcedir):
@@ -137,7 +124,7 @@ def scantree(sourcedir):
     print "Gathering list of files to copy..."
     if not  os.path.isdir(sourcedir):
         print "Error: %s not a directory" %sourcedir
-        Abort()
+        exit (1)
     startime=time.time()
     if DOSTAT:
         print "Performing a slow scan"
@@ -392,8 +379,6 @@ LSTRIPE=args.l       # preserve lustre information
 
 
 # Init MPI
-
-
 comm=MPI.COMM_WORLD
 rank=comm.Get_rank()
 workers=comm.size
@@ -408,7 +393,7 @@ try:
             print "Using %i processes for the copy." %workers
 
         starttime=time.time()
-        sanitycheck(sourcedir,destdir,workers)
+        sanitycheck(sourcedir,destdir)
         dirlist,filelist=scantree(sourcedir)
         workerfilelists=partitionlist(filelist,workers)
         createDirs(sourcedir,destdir,dirlist)
@@ -450,7 +435,6 @@ try:
         tasktime=time.time()-starttime
         print "R%i: done." %rank
         comm.gather((bytescopied,tasktime),root=0)
-        MPI.Finalize()
         exit(0)
 
 # We need to customize the global exception hander to call
@@ -460,5 +444,4 @@ except Exception,err:
     print err
     print traceback.print_tb(sys.exc_info()[2])
     MPI.COMM_WORLD.Abort(1)
-
-
+    exit (1)
