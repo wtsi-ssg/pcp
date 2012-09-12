@@ -1,0 +1,464 @@
+#!/software/python-2.7.3/bin/python
+# Parallel cp program
+# (c) Genome Research Ltd
+# Author gmpc@sanger.ac.uk
+
+__version__="0.7"
+
+""" This program copies a directory tree in parallel.
+
+Algorithm:
+
+The rank0 MPI task does a fast scan of the directory tree, and collates a
+list of files to copy.
+
+It then creates the entire target directory tree and sends a list of files to
+copy to other MPI ranks, which executes the copy.
+
+If the -s flag is selected, the rank0 task collect the size of each file to be
+copied during the filesystem scan. This is slow, but it ensure that each slave
+talk has an equal amount of data to copy.
+
+"""
+
+import argparse
+import os
+import stat
+import sys
+import shutil
+import traceback
+import time
+import ctypes
+import lustre
+
+try:
+    from mpi4py import MPI
+except ImportError:
+    print"""
+ERROR: Your environment needs to be configured for MPI.
+http://mediawiki.internal.sanger.ac.uk/wiki/index.php/How_to_run_MPI_jobs_on_the_farm
+"""
+    raise
+
+# Ctypes boilerplate for readdir/opendir/closedir
+clib=ctypes.CDLL("libc.so.6",use_errno=True)
+
+class dirent(ctypes.Structure):
+    _fields_ = [
+        ("ino_t", ctypes.c_ulong),
+        ("off_t", ctypes.c_ulong),
+        ("d_reclen", ctypes.c_short),
+        ("d_type",  ctypes.c_char ),
+        ("d_name", ctypes.c_char * 4000)
+]
+
+class c_dir(ctypes.Structure):
+    pass
+
+dirent_p=ctypes.POINTER(dirent)
+c_dir_p=ctypes.POINTER(c_dir)
+opendir=clib.opendir
+opendir.argtypes=[ctypes.c_char_p]
+opendir.restype=c_dir_p
+closedir=clib.closedir
+closedir.argtypes=[c_dir_p]
+closedir.restype=ctypes.c_int
+readdir=clib.readdir
+readdir.argtypes=[c_dir_p]
+readdir.restype=dirent_p
+
+
+def parseargs():
+    parser=argparse.ArgumentParser(description="Copy a directory tree in parallel",formatter_class=argparse.RawDescriptionHelpFormatter,
+                                   epilog="""
+
+This program traverses a directory tree and copies files in the tree in
+parallel. It does not copy individual files in parallel. It should be invoked
+via mpirun.
+
+Detailed information can be found here:
+
+http://mediawiki.internal.sanger.ac.uk/wiki/index.php/Parallel_file_copies
+
+If run with the -s flag, the sizes of the files to be copied are calcuated
+and the files distributed such that the workers have an equal amount of work
+to do. This slows down the initial directory scan significantly. This is only
+needed is the number of files is small compared to the number of workers.
+
+If run with the -l flag, pcp will be lustre stripe aware. When it encounters
+a striped file it will stripe the copy across all OSTs at the destination.
+
+For maximum efficiency, ensure tasks are spread across as many different
+machines as possible using ptile=1 to prevent local network bottlenecks. 
+
+Example bsub:
+
+bsub -R "span[ptile=1]" -oo logfile.txt -n 4  mpirun pcp ... """)
+                                   
+    parser.add_argument("SOURCE",help="source directory")
+    parser.add_argument("DEST",help="destination directory")
+    parser.add_argument("-n","--dry-run",help="perform a trial run with no copies made",action="store_true",default=False)
+    parser.add_argument("-t",help="retry file copies N times in case of IO errors",type=int,metavar="N",default=1)
+    parser.add_argument("-s",help="ensures parallel copy jobs are the same size (slow)"
+                        ,action="store_true",default=False)
+    parser.add_argument("-p",help="preserve ownership/permissions",default=False,action="store_true")
+    parser.add_argument("-v","--version",help="print version number",action='version',version=os.path.basename(sys.argv[0])+ " version "+__version__)
+    parser.add_argument("-l",help="be lustre stripe aware",default=False,action="store_true")
+    if len(sys.argv)==1:
+        parser.print_help()
+        sys.exit(1)
+    args=parser.parse_args()
+    return(args)
+
+
+def Abort():
+    MPI.Finalize()
+    exit (1)
+
+
+def sanitycheck(sourcedir,destdir,workers):
+    # Add some sanity check to stop people from running
+    # large parallel copies on NFS or warehouse.
+    max_nfs_parallel=5
+    for path in sourcedir,destdir:
+        fullpath=os.path.realpath(path)
+        if fullpath.startswith("/nfs") and workers >= max_nfs_parallel:
+            print
+            print "ERROR: attempting to copy to /nfs directory with more than %i tasks" %max_nfs_parallel
+            print "Please lower the amount of parallelism."
+            print
+            Abort()
+
+
+def scantree(sourcedir):
+    """Scan a directory and return a list of (directories,(filenames,sizes))"""
+    filelist=[]
+    dirlist=[]
+    print "Gathering list of files to copy..."
+    if not  os.path.isdir(sourcedir):
+        print "Error: %s not a directory" %sourcedir
+        Abort()
+    startime=time.time()
+    if DOSTAT:
+        print "Performing a slow scan"
+    dirlist,filelist=fastscan(sourcedir)
+    dirlist.insert(0,(sourcedir,os.stat(sourcedir)))
+    endtime=time.time()
+    walltime=endtime-startime
+    rate=(len(filelist)+len(dirlist))/walltime
+    print "scanned %i files, %i directories in %.2f seconds. (%.1f files/second)" %(len(filelist),len(dirlist),walltime,rate)
+    return(dirlist,filelist)
+
+def fastscan (sourcedir):
+    """Return a list of (directories,(filenames,sizes)). os.walk is stat-heavy; this version uses readdir(3) to avoid
+    the stat operations, making it much faster on lustre"""
+    filelist=[]
+    dirlist=[]
+    newdirlist=[]
+
+    dirp=opendir(sourcedir)
+    if not bool(dirp):
+        print "WARNING: Cannot open %s:"  %(sourcedir)
+        print os.strerror(ctypes.get_errno())
+        return([],[])
+
+    while True:
+        p=readdir(dirp)
+        if not p:
+            break
+        name=p.contents.d_name
+        filetype=p.contents.d_type
+        if not name in (".",".."):
+            fullname=os.path.join(sourcedir,name)
+
+            if filetype=="\x04":
+                dirlist.append((fullname,os.stat(fullname)))
+            else:
+                if DOSTAT:
+                    filelist.append((fullname,os.lstat(fullname).st_size))
+                else:
+                    filelist.append((fullname,0))
+
+            # TODO geting stripe information here would allow us to partition the worklist
+            # by OST...
+#            if LSTRIPE:
+#                stripe=lustre.getstripe(fullname)
+
+    closedir(dirp)
+    for d in dirlist:
+        subdir,subfile=fastscan(d[0])
+        filelist.extend(subfile)
+        # we can't extend dirlist whilst we are inside the for loop
+        newdirlist.extend(subdir)
+    dirlist.extend(newdirlist)
+    return(dirlist,filelist)
+
+
+def partitionlist(filelist,nworkers):    
+    """ Split the filelist into a list for each worker; sorting by size means that
+    each worker has approx the same amount of data to copy. """
+    workerlist=[]
+    if DOSTAT:
+        filelist.sort(key=lambda x:x[1],reverse=True)
+    for i in range(nworkers):
+        workerlist.append(filelist[i::nworkers])
+    return(workerlist)
+        
+def createDirs(sourcedir,destdir,dirlist):
+    """Create the destination dirtectory tree."""
+    print "Populating directory tree..."
+    print sourcedir
+    startime=time.time()
+    for srcdir,s in dirlist:
+        dest=mungePath(sourcedir,destdir,srcdir)
+        print "mkdir %s:" %dest,
+        if DryRun:
+            pass
+        else:
+            # Don't worry is the destination directory already exists
+            try:
+                os.mkdir(dest)
+            except OSError,error:
+                if error.errno<>17:
+                    raise error
+            if PRESERVE:
+                try:
+                    os.chmod(dest,s.st_mode)
+                    os.chown(dest,s.st_uid,s.st_gid)
+                # Don't worry if we can't set the permissions/uid to be the same as the
+                # previous side; we might be copying someone else's data.
+                except OSError,error:
+                    if error.errno<>1:
+                        raise error
+                    else:
+                        print "WARNING: Unable to set permissions on %s" %dest
+
+            if LSTRIPE:
+                layout=lustre.getstripe(srcdir)
+                if layout.isstriped():
+                    print "(striped)",
+                    lustre.setstripe(dest,stripecount=-1)
+                else:
+                    lustre.setstripe(dest,stripecount=1)
+        print ""
+
+    endtime=time.time()
+    walltime=endtime-startime
+    rate=len(dirlist)/walltime
+    print "done in %1.f seconds (%.1f creates / second)" %(walltime,rate)
+    return(0)
+
+def mungePath(src,dst,f):
+    """Convert the sourcepath to the desinationpath"""
+    suffix=f.partition(src)[2]
+    dest=dst+suffix
+    return(dest)
+
+def mycopy2 (src,dst):
+    """Copy a file from src to dst. The copy is lustre stripe aware."""
+    srcstat=os.lstat(src)
+    mode=srcstat.st_mode
+    size=srcstat.st_size
+
+    # regular files
+    if stat.S_ISREG(mode):
+        
+        if LSTRIPE:
+            layout=lustre.getstripe(src)
+            if layout.isstriped():
+                print "(striped)",
+                count=-1
+            else:
+                count=1
+
+            try:
+                lustre.setstripe(dst,stripecount=count)
+            except IOError,error:
+                if error.errno==17:
+                    # file exists; blow it away and try again...
+                    os.remove(dst)
+                    lustre.setstripe(dst,stripecount=count)
+                else:
+                    raise error
+                
+        if PRESERVE:
+            shutil.copy2(src,dst)
+            try:
+                os.chown(dst,srcstat.st_uid,srcstat.st_gid)
+            except OSError,error:
+                if error.errno==1:
+                    print "WARNING: Unable to preserve permissions on %s" %dst
+                else:
+                    raise error
+        else:
+            shutil.copyfile(src,dst)
+        return(size)
+            
+    # symlinks
+    if stat.S_ISLNK(mode):
+        linkto=os.readlink(src)
+        try:
+            os.symlink(linkto,dst)
+        except OSError,error:
+            if error.errno==17:
+                os.remove(dst)
+                os.symlink(linkto,dst)
+            else:
+                raise error
+        return(0)
+
+    # special files
+    filemode=stat.S_IFMT(mode)
+    if filemode==0010000:
+        filetype="FIFO"
+    elif filemode==0020000:
+        filetype="character device"
+    elif filemode==0060000:
+        filetype="block device"
+    elif filemode==0140000:
+        filetype="socket"
+    else:
+        filetype="unknown"
+    print "WARNING: unable to copy (%s)" %filetype,
+    return(0)
+
+def copyFiles(sourcedir,destdir,worklist,maxtries):
+    """Copys a list of files from sourcedir to destdir. If it encounters and IO error (eg due to lustre
+    eviction), it will retry the copy until maxtries is exceeded."""
+    totalcopied=0
+    nfiles=len(worklist)
+    for f,s in worklist:
+        dest=mungePath(sourcedir,destdir,f)
+
+        if DryRun:
+            print "R%i: %s" %(rank,f)
+        else:
+            i=0
+            while i < maxtries:
+                print "R%i: %s" %(rank,f),
+                try:
+                    starttime=time.time()
+                    size=mycopy2(f,dest)
+                    totalcopied+=size
+                    endtime=time.time()
+                    if size==0:
+                        speed=0
+                    else:
+                        speed=size/(endtime-starttime)
+                    print "%s (%s/s)" %(prettyPrint(size),prettyPrint(speed))
+                    break
+                except IOError,error:
+                    # we don't care about permission denied errors.
+                    if error.errno==13:
+                        print "WARNING: permission denied"
+                        break
+                    else:
+                        i+=1
+                        print "WARNING: Error copying on attempt %i"  %(i)
+                        if i==maxtries:
+                            print "ERROR: Max number of retries on %s exceeded" %(f)
+                            raise error
+    return(totalcopied)
+
+def prettyPrint(bytes):
+    """convert bytes to k/M/G/T etc"""
+    abrevs= (
+        (1<<50,"Pbytes"),
+        (1<<40,"Tbytes"),
+        (1<<30,"Gbytes"),
+        (1<<20,"Mbytes"),
+        (1<<10,"kbytes"),
+        (1,"bytes")
+        )
+
+    for factor,suffix in abrevs:
+        if bytes>=factor:
+            break
+    string="%.*f %s" %(1,bytes/factor,suffix)
+    return (string)
+
+
+dirlist=[] # List of directories to create
+filelist=[] # (file,size)
+workerfilelists=[] # filelist partitioned for each worker
+args=parseargs() 
+sourcedir=args.SOURCE.rstrip(os.path.sep) # source
+destdir=args.DEST.rstrip(os.path.sep)  # destination
+DryRun=args.dry_run  # Dry run
+maxtries=args.t      # number of retries on IO error
+DOSTAT=args.s        # slow scan/sort to make works the same size
+PRESERVE=args.p      # preserve permissions etc
+LSTRIPE=args.l       # preserve lustre information
+
+
+# Init MPI
+
+
+comm=MPI.COMM_WORLD
+rank=comm.Get_rank()
+workers=comm.size
+
+try:
+
+    if rank==0:    
+        # master process
+        if workers == 1:
+            print "WARNING: Only 1 processes running. Did you invoke me via mpirun?"
+        else:
+            print "Using %i processes for the copy." %workers
+
+        starttime=time.time()
+        sanitycheck(sourcedir,destdir,workers)
+        dirlist,filelist=scantree(sourcedir)
+        workerfilelists=partitionlist(filelist,workers)
+        createDirs(sourcedir,destdir,dirlist)
+        print "Copying files..."
+
+        # send the file lists out
+        for i in range(1,workers):
+            comm.send(workerfilelists[i],dest=i,tag=1)
+
+        # copy our own data
+        bytescopied=copyFiles(sourcedir,destdir,workerfilelists[0],maxtries)
+        tasktime=time.time()-starttime
+        print "R%i: done." %rank
+
+        #comm.gather barriers until everyone has replied
+        workerstats=comm.gather((bytescopied,tasktime),root=0)
+        totaltime=time.time()-starttime
+        
+        #print out the statistics
+        totalbytes=0
+        for bytes,null in workerstats:
+            totalbytes+=bytes
+        
+        print "\nEveryone Done."
+        print "Total data copied: %s (%s/s)"  %(prettyPrint(totalbytes),prettyPrint(totalbytes/totaltime))
+        r=0
+        for bytes,time in workerstats:
+            print "\tRank  %i copied %s (%s/s)" %(r,prettyPrint(bytes),prettyPrint(bytes/time))
+            r+=1
+
+        MPI.Finalize()
+        exit(0)
+
+    else:
+        # workers
+        worklist=comm.recv(source=0,tag=1)
+        starttime=time.time()
+        bytescopied=copyFiles(sourcedir,destdir,worklist,maxtries)
+        tasktime=time.time()-starttime
+        print "R%i: done." %rank
+        comm.gather((bytescopied,tasktime),root=0)
+        MPI.Finalize()
+        exit(0)
+
+# We need to customize the global exception hander to call
+# MPI ABORT in our exception handler, otherwise the other
+# MPI processes spin forever.
+except Exception,err:
+    print err
+    print traceback.print_tb(sys.exc_info()[2])
+    MPI.COMM_WORLD.Abort(1)
+
+

@@ -1,0 +1,12 @@
+*sh
+*pyc
+*so
+test
+*~
+fastwalk.py
+helloMPI.py
+logfile.txt
+output.out
+queueMPI.py
+queuerun
+test-lustre.py
