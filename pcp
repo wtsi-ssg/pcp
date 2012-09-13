@@ -131,15 +131,22 @@ def Abort():
 def sanitycheck(sourcedir,destdir):
     # Add some sanity check to stop people from running
     # large parallel copies on NFS or warehouse.
-    max_nfs_parallel=5
+
+    # holds the number of processes that each filesystem can support
+    maxprocfs={"/nfs":5,
+                  "/warehouse":5,
+                  "/lustre":100}
+    
     for path in sourcedir,destdir:
         fullpath=os.path.realpath(path)
-        if fullpath.startswith("/nfs") and workers > max_nfs_parallel:
-            print
-            print "ERROR: attempting to copy to /nfs directory with more than %i tasks." %max_nfs_parallel
-            print "Please lower the amount of parallelism."
-            print
-            Abort()
+
+        for filesystem in maxprocfs:
+            if fullpath.startswith(filesystem) and workers >= maxprocfs[filesystem]:
+                print
+                print "ERROR: attempting to copy to a %s directory with more than %i tasks." %(filesystem,maxprocfs[filesystem])
+                print "Please lower the amount of parallelism."
+                print
+                Abort()
 
 
 def scantree(sourcedir):
@@ -444,14 +451,11 @@ LSTRIPE=args.l       # preserve lustre information
 MINSTRIPESIZE=args.ls  # don't stripe for files smaller than this
 nwarning=0 # number of warning
 
-
 # Init MPI
 comm=MPI.COMM_WORLD
 rank=comm.Get_rank()
 workers=comm.size
-
 try:
-
     if rank==0:    
         # master process
         if workers == 1:
@@ -465,9 +469,8 @@ try:
             if MINSTRIPESIZE>0:
                 print "Will not stripe files smaller than %s"  %prettyPrint(MINSTRIPESIZE)
 
-
-        starttime=time.time()
         sanitycheck(sourcedir,destdir)
+        starttime=time.time()
         dirlist,filelist=scantree(sourcedir)
         workerfilelists=partitionlist(filelist,workers)
         nwarning+=createDirs(sourcedir,destdir,dirlist)
