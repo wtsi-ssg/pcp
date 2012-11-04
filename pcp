@@ -174,11 +174,13 @@ def fastscan (sourcedir):
     filelist=[]
     dirlist=[]
     newdirlist=[]
+    global WARNINGS
 
     dirp=opendir(sourcedir)
     if not bool(dirp):
         print "WARNING: Cannot open %s:"  %(sourcedir)
         print os.strerror(ctypes.get_errno())
+        WARNINGS+=1
         return([],[])
 
     while True:
@@ -227,7 +229,7 @@ def createDirs(sourcedir,destdir,dirlist):
     """Create the destination dirtectory tree.
     Returns the number of warnings encountered.
     """
-    nwarning=0
+    global WARNINGS
     print "Populating directory tree..."
     print sourcedir
     startime=time.time()
@@ -254,7 +256,7 @@ def createDirs(sourcedir,destdir,dirlist):
                         raise error
                     else:
                         print "WARNING: Unable to set permissions on %s" %dest
-                        nwarning+=1
+                        WARNGINGS+=1
 
             if LSTRIPE:
                 layout=lustre.getstripe(srcdir)
@@ -269,7 +271,7 @@ def createDirs(sourcedir,destdir,dirlist):
     walltime=endtime-startime
     rate=len(dirlist)/walltime
     print "done in %1.f seconds (%.1f creates / second)" %(walltime,rate)
-    return(nwarning)
+    return
 
 def mungePath(src,dst,f):
     """Convert the sourcepath to the desinationpath"""
@@ -285,7 +287,7 @@ def copyFile (src,dst):
     srcstat=os.lstat(src)
     mode=srcstat.st_mode
     size=srcstat.st_size
-    nwarning=0
+    global WARNINGS
 
     # regular files
     if stat.S_ISREG(mode):
@@ -319,12 +321,12 @@ def copyFile (src,dst):
             except OSError,error:
                 if error.errno==1:
                     print "WARNING: Unable to preserve permissions on %s" %dst
-                    nwarning+=1
+                    WARNINGS+=1
                 else:
                     raise error
         else:
             shutil.copyfile(src,dst)
-        return(size,nwarning)
+        return(size)
             
     # symlinks
     if stat.S_ISLNK(mode):
@@ -337,7 +339,7 @@ def copyFile (src,dst):
                 os.symlink(linkto,dst)
             else:
                 raise error
-        return(0,nwarning)
+        return(0)
 
     # special files
     filemode=stat.S_IFMT(mode)
@@ -352,15 +354,15 @@ def copyFile (src,dst):
     else:
         filetype="unknown"
     print "WARNING: unable to copy (%s)" %filetype,
-    nwarning+=1
-    return(0,nwarning)
+    WARNINGS+=1
+    return(0)
 
 def copyFilelist(sourcedir,destdir,filelist,maxtries):
     """Copys a list of files from sourcedir to destdir.
     Returns (bytes copied,number of warnings).
     If it encounters and IO error (eg due to lustre
     eviction), it will retry the copy until maxtries is exceeded."""
-    nwarning=0
+    global WARNINGS
     totalcopied=0
     nfiles=len(filelist)
     for f,s in filelist:
@@ -374,8 +376,7 @@ def copyFilelist(sourcedir,destdir,filelist,maxtries):
                 print "R%i: %s" %(rank,f),
                 try:
                     starttime=time.time()
-                    size,warnings=copyFile(f,dest)
-                    nwarning+=warnings
+                    size=copyFile(f,dest)
                     totalcopied+=size
                     endtime=time.time()
                     if size==0:
@@ -388,16 +389,16 @@ def copyFilelist(sourcedir,destdir,filelist,maxtries):
                     # we don't care about permission denied errors.
                     if error.errno==13:
                         print "WARNING: permission denied"
-                        nwarning+=1
+                        WARNINGS+=1
                         break
                     else:
                         i+=1
                         print "WARNING: Error copying on attempt %i"  %(i)
-                        nwarning+=1
+                        WARNINGS+=1
                         if i==maxtries:
                             print "ERROR: Max number of retries on %s exceeded" %(f)
                             raise error
-    return(totalcopied,nwarning)
+    return(totalcopied)
 
 def prettyPrint(bytes):
     """convert bytes to k/M/G/T etc"""
@@ -449,7 +450,7 @@ DOSTAT=args.s        # slow scan/sort to make works the same size
 PRESERVE=args.p      # preserve permissions etc
 LSTRIPE=args.l       # preserve lustre information
 MINSTRIPESIZE=args.ls  # don't stripe for files smaller than this
-nwarning=0 # number of warning
+WARNINGS=0 # number of warning
 
 # Init MPI
 comm=MPI.COMM_WORLD
@@ -460,7 +461,7 @@ try:
         # master process
         if workers == 1:
             print "WARNING: Only 1 processes running. Did you invoke me via mpirun?"
-            nwarning+=1
+            WARNINGS+=1
         else:
             print "Using %i processes for the copy." %workers
 
@@ -473,7 +474,7 @@ try:
         starttime=time.time()
         dirlist,filelist=scantree(sourcedir)
         workerfilelists=partitionlist(filelist,workers)
-        nwarning+=createDirs(sourcedir,destdir,dirlist)
+        createDirs(sourcedir,destdir,dirlist)
         print "\nCopying files..."
 
         # send the file lists out
@@ -481,13 +482,12 @@ try:
             comm.send(workerfilelists[i],dest=i,tag=1)
 
         # copy our own data
-        bytescopied,warnings=copyFilelist(sourcedir,destdir,workerfilelists[0],maxtries)
-        nwarning+=warnings
+        bytescopied=copyFilelist(sourcedir,destdir,workerfilelists[0],maxtries)
         tasktime=time.time()-starttime
         print "R%i: done." %rank
 
         #comm.gather barriers until everyone has replied
-        workerstats=comm.gather((bytescopied,tasktime,nwarning),root=0)
+        workerstats=comm.gather((bytescopied,tasktime,WARNINGS),root=0)
         totaltime=time.time()-starttime
         
         totalbytes=sum(item[0] for item in workerstats)
@@ -510,11 +510,10 @@ try:
         # workers
         worklist=comm.recv(source=0,tag=1)
         starttime=time.time()
-        bytescopied,warnings=copyFilelist(sourcedir,destdir,worklist,maxtries)
-        nwarning+=warnings
+        bytescopied=copyFilelist(sourcedir,destdir,worklist,maxtries)
         tasktime=time.time()-starttime
         print "R%i: done." %rank
-        comm.gather((bytescopied,tasktime,nwarning),root=0)
+        comm.gather((bytescopied,tasktime,WARNINGS),root=0)
         MPI.Finalize()
         exit(0)
 
