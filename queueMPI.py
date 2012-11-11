@@ -1,4 +1,4 @@
-#!/software/python-2.7.3/bin/python
+#!/usr/bin/python2.7
 # MPI producer + multiple consumer implementation
 
 # Rank 1 pushes work onto the queue
@@ -6,82 +6,66 @@
 # Rank 0 co-ordinates
 
 from mpi4py import MPI
+
+from multiprocessing import Process,Pipe
+# Efficient queue object
+from collections import deque
 import time
 import random
 
-class queue:
-    def __init__(self):
-        self.queuelist=[]
+def SpawnScanner():
+    pipesend,piperecv=Pipe()
+    p=Process(target=ProduceWork,args=(pipesend,))
+    p.start()
+    return(piperecv)
 
-    def __len__(self):
-        return (len(self.queuelist))
+def ProduceWork(pipe):    
+    file=0
+    while file < 10:
+        pipe.send(file)
+        file+=1
+    #Shutdown
+    pipe.send("EOF")
+    return(0)
 
-    def __iter__(self):
-        pass
 
-    def enqueue(self,item):
-        self.queuelist.insert(0,item)
-        return(0)
-
-    def dequeue(self):
-        return(self.queuelist.pop())
-
-    def length(self):
-        pass
-
-comm=MPI.COMM_WORLD
-rank=comm.Get_rank()
-size=comm.size
-
-if rank==0: # master
-    print size," processes launched"
-    print "I am the master now! (rank 0)"    
-    print "Rank 0 waiting for slaves..."
-    files=queue()
-    idleworkers=queue()
+def DispatchWork(pipe):
+    files=deque()
+    idleworkers=deque()
 
     while 1:
-        data=comm.recv(source=MPI.ANY_SOURCE,tag=1)
-        if data[0]=="NEWOBJ":
-            files.enqueue(data[1])
-        if data[0]=="WAITING":
-            idleworkers.enqueue(data[1])
+        if pipe.poll():
+            data=pipe.recv()
+            files.appendleft(data)
 
+        if comm.Iprobe(source=MPI.ANY_SOURCE,tag=1):
+            status,data=comm.recv(source=MPI.ANY_SOURCE,tag=1)
+            idleworkers.appendleft(data)
+        
         # try for dispatch
         if len(files) > 0 and len(idleworkers) > 0:
-            worker=idleworkers.dequeue()
-            workunit=files.dequeue()
-            # check for the end of workunit
-            if workunit==None:
+            worker=idleworkers.pop()
+            workunit=files.pop()
+            # check for the end of queue
+            if workunit=="EOF":
                 print "Done"
                 break
-
+            
             comm.send(workunit,dest=worker,tag=1)
             # If this is a directory, we need to wait for the worker to finish before
             # we can continue
 
-    # send shutdown to workers
-    for r in range(1,size):
-        comm.send(None,dest=r,tag=1)
-    
-elif rank==1:  # Producer
-    file=0
-    while file < 10:
-        data=("NEWOBJ",file)
-        comm.send(data,dest=0,tag=1)
-        file+=1
-    #Shutdown
-    comm.send(("NEWOBJ",None),dest=0,tag=1)
-    exit(0)
+            if workunit==5:
+                print "5 is blocking"
+                status,data=comm.recv(source=worker,tag=1)
+                print status,data
+                print "unblocking 5"
+                idleworkers.appendleft(data)
 
-else:  # consumer
-    count=0
+def ConsumeWork():
     while 1:
-        # ask for work
-        data=("WAITING",rank)
-        comm.send(data,dest=0,tag=1)
+        comm.isend(("WAITING",rank),dest=0,tag=1)
         work=comm.recv(source=0,tag=1)
-
         if work==None:
             print "rank %i shutdown" %rank
             exit(0)
@@ -89,3 +73,25 @@ else:  # consumer
         # do some work
         time.sleep(random.randint(0,5))
         # if we were doing a directory send confirmation
+
+
+def ShutdownWorkers():
+    # send shutdown to workers
+    for r in range(1,size):
+        comm.isend(None,dest=r,tag=1)
+
+comm=MPI.COMM_WORLD
+rank=comm.Get_rank()
+size=comm.size
+        
+if rank==0: # master
+    print size," processes launched"
+    print "I am the master now! (rank 0)"    
+
+    pipe=SpawnScanner()
+    print "Rank 0 waiting for slaves..."
+    DispatchWork(pipe)
+    ShutdownWorkers()
+
+else:  # consumer
+    ConsumeWork()
