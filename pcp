@@ -3,7 +3,7 @@
 # (c) Genome Research Ltd
 # Author gmpc@sanger.ac.uk
 
-__version__="0.8.1"
+__version__="0.8.2"
 
 """ This program copies a directory tree in parallel.
 
@@ -100,6 +100,7 @@ bsub -R "span[ptile=1]" -oo logfile.txt -n 4  mpirun pcp ... """)
                                    
     parser.add_argument("SOURCE",help="source directory")
     parser.add_argument("DEST",help="destination directory")
+    parser.add_argument("-d",help="dead worker timeout (seconds)",default=10,type=int)
     parser.add_argument("-n","--dry-run",help="perform a trial run with no copies made",action="store_true",default=False)
     parser.add_argument("-t",help="retry file copies N times in case of IO errors",type=int,metavar="N",default=1)
     parser.add_argument("-s",help="ensures parallel copy jobs are the same size (slow)"
@@ -224,7 +225,27 @@ def partitionlist(filelist,nworkers):
     for i in range(nworkers):
         workerlist.append(filelist[i::nworkers])
     return(workerlist)
-        
+
+def checkAlive(timeout):
+    """Quirky farm nodes can cause the MPI runtime to lock up. Check whether nodes have responded after timeout seconds, and bail if not."""
+    # Check that our slaves actually spawned:
+    expectedworkers=set(range(1,workers))
+    aliveworkers=set()
+    giveuptime=time.time()+timeout
+    while time.time() < giveuptime:
+        if comm.Iprobe(source=MPI.ANY_SOURCE,tag=3):
+            status,rank=comm.recv(source=MPI.ANY_SOURCE,tag=3)
+            aliveworkers.add(rank)
+            print "R0: R%i is alive" %rank
+            if len(aliveworkers)==len(expectedworkers):
+                print "R0: All workers have reported in."
+                return
+    print "Error: The following workers did not report in after %i seconds" %timeout
+    awol=expectedworkers.difference(aliveworkers)
+    for i in awol:
+        print "R%i" %i
+    Abort()
+
 def createDirs(sourcedir,destdir,dirlist):
     """Create the destination dirtectory tree.
     Returns the number of warnings encountered.
@@ -451,13 +472,14 @@ PRESERVE=args.p      # preserve permissions etc
 LSTRIPE=args.l       # preserve lustre information
 MINSTRIPESIZE=args.ls  # don't stripe for files smaller than this
 WARNINGS=0 # number of warning
+timeout=args.d # dead worker timeout
 
 # Init MPI
 comm=MPI.COMM_WORLD
 rank=comm.Get_rank()
 workers=comm.size
 try:
-    if rank==0:    
+    if rank==0:
         # master process
         if workers == 1:
             print "WARNING: Only 1 processes running. Did you invoke me via mpirun?"
@@ -470,6 +492,7 @@ try:
             if MINSTRIPESIZE>0:
                 print "Will not stripe files smaller than %s"  %prettyPrint(MINSTRIPESIZE)
 
+        checkAlive(timeout)
         sanitycheck(sourcedir,destdir)
         starttime=time.time()
         dirlist,filelist=scantree(sourcedir)
@@ -491,7 +514,6 @@ try:
         #comm.gather barriers until everyone has replied
         workerstats=comm.gather((bytescopied,tasktime,WARNINGS),root=0)
         totaltime=time.time()-starttime
-        
         totalbytes=sum(item[0] for item in workerstats)
         totalwarn=sum(item[2] for item in workerstats)
         print "\nEveryone Done."
@@ -510,6 +532,7 @@ try:
 
     else:
         # workers
+        comm.send(("ALIVE",rank),dest=0,tag=3)
         worklist=comm.recv(source=0,tag=1)
         starttime=time.time()
         bytescopied=copyFilelist(sourcedir,destdir,worklist,maxtries)
