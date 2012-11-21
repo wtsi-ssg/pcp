@@ -3,7 +3,7 @@
 # (c) Genome Research Ltd
 # Author gmpc@sanger.ac.uk
 
-__version__="0.8"
+__version__="0.8.1"
 
 """ This program copies a directory tree in parallel.
 
@@ -479,9 +479,11 @@ try:
 
         # send the file lists out
         for i in range(1,workers):
+            print "Sending work to R%i" %i
             comm.send(workerfilelists[i],dest=i,tag=1)
 
         # copy our own data
+        print "All work sent. Now copying our files."
         bytescopied=copyFilelist(sourcedir,destdir,workerfilelists[0],maxtries)
         tasktime=time.time()-starttime
         print "R%i: done." %rank
