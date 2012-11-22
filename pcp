@@ -3,7 +3,7 @@
 # (c) Genome Research Ltd
 # Author gmpc@sanger.ac.uk
 
-__version__="0.8.2"
+__version__="0.8.3"
 
 """ This program copies a directory tree in parallel.
 
@@ -435,7 +435,7 @@ def prettyPrint(bytes):
     for factor,suffix in abrevs:
         if bytes>=factor:
             break
-    string="%.*f %s" %(1,bytes/factor,suffix)
+    string="%.*f %s" %(1,bytes/float(factor),suffix)
     return (string)
 
 
