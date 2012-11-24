@@ -293,8 +293,11 @@ def DispatchWork():
             if workunit==None:
                 print "Done"
                 break
-            comm.send(workunit,dest=worker,tag=1)
-            # If this is a directory, we need to wait for the worker to finish before
+
+            #We sould be safe to use nonblock send here as workers only
+            #go back into the queue once they have finished the copy.
+            comm.isend(workunit,dest=worker,tag=1)
+            # If the work unit was a directory, we need to wait for the worker to finish before
             # we can continue
             if workunit[1]=="d":
                  status,data=comm.recv(source=worker,tag=1)
