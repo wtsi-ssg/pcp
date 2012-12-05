@@ -79,7 +79,8 @@ Detailed information can be found here:
 http://mediawiki.internal.sanger.ac.uk/wiki/index.php/Parallel_file_copies
 
 If run with the -l flag, pcp will be lustre stripe aware. When it encounters
-a striped file it will stripe the copy across all OSTs at the destination.
+a striped file it will stripe the copy across all OSTs at the destination. Note
+that it does not exactly preserve stripe information.
 
 If a size is specified with -ls, pcp will not stripe files smaller than this,
 even if the original is striped.
@@ -97,7 +98,8 @@ bsub -R "span[ptile=1]" -oo logfile.txt -n 4  mpirun pcp ... """)
     parser.add_argument("-n","--dry-run",help="perform a trial run with no copies made",action="store_true",default=False)
     parser.add_argument("-t",help="retry file copies N times in case of IO errors",type=int,metavar="N",default=1)
     parser.add_argument("-p",help="preserve ownership/permissions",default=False,action="store_true")
-    parser.add_argument("-v","--version",help="print version number",action='version',version=os.path.basename(sys.argv[0])+ " version "+__version__)
+    parser.add_argument("-v",help="verbose",default=False,action="store_true")
+    parser.add_argument("-V","--version",help="print version number",action='version',version=os.path.basename(sys.argv[0])+ " version "+__version__)
     parser.add_argument("-l",help="be lustre stripe aware",default=False,action="store_true")
     parser.add_argument("-ls",help="do not stripe files smaller than B bytes. Implies -l. Size can be suffixed with k,M,G,T,P",metavar="B",default=0)
 
@@ -298,7 +300,7 @@ def OptimizeWorkUnitSize():
 
 def ShutdownWorkers(starttime):
     """Tell workers we have no more work for them and collate the stats"""
-    totalwarnings=0
+    totalwarnings=WARNINGS
     totalfiles=0
     totalbytes=0
     maxtime=0
@@ -354,7 +356,8 @@ def createDir(sourcedir,destdir):
     if LSTRIPE:
         layout=lustre.getstripe(sourcedir)
         if layout.isstriped():
-            print "(striped)",
+            if VERBOSE:
+                print "(striped)",
             lustre.setstripe(destdir,stripecount=-1)
         else:
             lustre.setstripe(destdir,stripecount=1)
@@ -363,18 +366,19 @@ def robustCreateDir(sourcedir,destdir):
     """Attempt to copy a directory. Retry the copy MAXTRIES in case of IO error."""
     global WARNINGS
     if DRYRUN:
-        print "R%i mkdir %s" %(rank,destdir)
+        if VERBOSE:
+            print "R%i mkdir %s" %(rank,destdir)
     else:
         i=0
         while i < MAXTRIES:
-            print "R%i mkdir %s" %(rank,destdir),
+            if VERBOSE:
+                print "R%i mkdir %s" %(rank,destdir)
             try:
                 createDir(sourcedir,destdir)
-                print ""
                 break
             except IOError,error:
                 i+=1
-                print "WARNING: mkdir error on attempt %i" %(i)
+                print "WARNING: mkdir error on %s attempt %i" %(destdir,i)
                 WARNINGS+=1
                 if i==MAXTRIES:
                     print "ERROR: Max number of retries on %s exceeded" %(sourcedir)
@@ -404,10 +408,12 @@ def copyFile (src,dst):
             layout=lustre.getstripe(src)
             if layout.isstriped():
                 if size < MINSTRIPESIZE:
-                    print "(small file, ignoring striping)",
+                    if VERBOSE:
+                        print "(small file, ignoring striping)",
                     count=1
                 else:
-                    print "(striped)",
+                    if VERBOSE:
+                        print "(striped)",
                     count=-1
             else:
                 count=1
@@ -474,11 +480,13 @@ def robustCopyFile(sourcepath,destpath):
 
     size=0
     if DRYRUN:
-        print "R%i: %s" %(rank,sourcepath)
+        if VERBOSE:
+            print "R%i: %s" %(rank,sourcepath)
     else:
         i=0
         while i < MAXTRIES:
-            print "R%i: %s" %(rank,sourcepath),
+            if VERBOSE:
+                print "R%i: %s" %(rank,sourcepath),
             try:
                 starttime=time.time()
                 size=copyFile(sourcepath,destpath)
@@ -487,7 +495,8 @@ def robustCopyFile(sourcepath,destpath):
                     speed=0
                 else:
                     speed=size/(endtime-starttime)
-                print "%s (%s/s)" %(prettyPrint(size),prettyPrint(speed))
+                if VERBOSE:
+                    print "%s (%s/s)" %(prettyPrint(size),prettyPrint(speed))
                 break
             except IOError,error:
                 # we don't care about permission denied errors.
@@ -497,7 +506,7 @@ def robustCopyFile(sourcepath,destpath):
                     break
                 else:
                     i+=1
-                    print "WARNING: Error copying on attempt %i"  %(i)
+                    print "WARNING: Error copying %s on attempt %i"  %(sourcepath,i)
                     WARNINGS+=1
                     if i==MAXTRIES:
                         print "ERROR: Max number of retries on %s exceeded" %(sourcepath)
@@ -551,7 +560,7 @@ PRESERVE=args.p      # preserve permissions etc
 LSTRIPE=args.l       # preserve lustre information
 MINSTRIPESIZE=args.ls  # don't stripe for files smaller than this
 WARNINGS=0 # number of warning
-
+VERBOSE=args.v    # Should we be verbose
 sourcedir=args.SOURCE.rstrip(os.path.sep) # source
 destdir=args.DEST.rstrip(os.path.sep)  # destination
 timeout=args.d # dead worker timeout
@@ -580,10 +589,9 @@ try:
         sanitycheck(sourcedir,destdir)
         starttime=time.time()
         filelist,dirlist=scantree(sourcedir)
-        print "\nCopying directories..."
+        print "Copying directories..."
         copyDirectories(sourcedir,destdir,dirlist)
-
-        print "\nCopying files..."
+        print "Copying files..."
         DispatchWork(filelist)
         ShutdownWorkers(starttime)
         print "Master process done."
