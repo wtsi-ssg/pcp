@@ -137,9 +137,9 @@ def getstripe(filename):
 
     
 def setstripe(filename,stripeobj=None,stripesize=0,stripeoffset=-1,stripecount=1):
-    """Sets the striping on a file or directory.
-    This function creates a new file with the specified striping. Stripe parameters can be set explicity,
-    or you can pass in an existing stripeobj to copy the attributes from an existing file.
+    """Sets the striping on an existing directory, or create a new empty file with the specified striping.
+    Stripe parameters can be set explicity, or you can pass in an existing stripeobj
+    to copy the attributes from an existing file.
 
     Note you can set the striping on an existing directory, but you cannot set the striping on an existing
     file.
