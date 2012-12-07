@@ -1,4 +1,4 @@
-#!/software/python-2.7.3/bin/python
+#!/usr/bin/python
 # Parallel cp program
 # Copyright (c) Genome Research Ltd 2012
 # Author Guy Coates <gmpc@sanger.ac.uk>
@@ -29,7 +29,7 @@ import time
 import ctypes
 import lustre
 from collections import deque
-
+from mpi4py import MPI
 
 # Ctypes boilerplate for readdir/opendir/closedir
 clib=ctypes.CDLL("libc.so.6",use_errno=True)
@@ -251,12 +251,6 @@ def checkAlive(rank,workers,timeout):
 
 def DispatchWork(filelist):
     """pop idle workers and the next workunit from the queue and dispatch them."""
-    files=deque()
-    idleworkers=deque()
-    while 1:
-        if comm.Iprobe(source=1,tag=2):
-            data=comm.recv(source=1,tag=2)
-            files.appendleft(data)
 
     idleworkers=deque()
     while len(filelist) > 0:
