@@ -25,7 +25,8 @@ version by doing the following:
 ar -x liblustreapi.a
 gcc -shared -fpic -o lublustreapi.so *.o
 
-Place the resulting library in the same directory as lustre.py.
+Place the resulting library in the same directory as lustre.py, which
+should be on your $PYTHONPATH, or in the same directory as pcp.
 
 Usage
 -----
