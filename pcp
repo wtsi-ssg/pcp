@@ -501,7 +501,7 @@ def robustCopyFile(sourcepath,destpath):
             except IOError,error:
                 # we don't care about permission denied errors.
                 if error.errno==13:
-                    print "WARNING: permission denied"
+                    print "WARNING: permission denied on %s" %(sourcepath)
                     WARNINGS+=1
                     break
                 else:
