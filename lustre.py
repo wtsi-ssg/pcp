@@ -1,3 +1,7 @@
+# Copyright (c) Genome Research Ltd 2012
+# Author Guy Coates <gmpc@sanger.ac.uk>
+# This program is released under the GNU Public License V2 (GPLv2)
+
 """
 Python bindings to minimal subset of lustre api.
 This module requires a dynamically linked version of the lustre
@@ -10,8 +14,6 @@ ar -x liblustreapi.a
 gcc -shared -fpic  -o liblustreapi.so *.o
 
 """
-# (c) Genome Research Ltd
-# Author gmpc@sanger.ac.uk
 
 __version__=0.1
 

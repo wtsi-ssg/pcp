@@ -1,7 +1,8 @@
 #!/software/python-2.7.3/bin/python
 # Parallel cp program
-# (c) Genome Research Ltd
-# Author gmpc@sanger.ac.uk
+# Copyright (c) Genome Research Ltd 2012
+# Author Guy Coates <gmpc@sanger.ac.uk>
+# This program is released under GNU Public License V2 (GPLv2)
 
 __version__="0.9"
 
