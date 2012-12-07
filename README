@@ -1,0 +1,72 @@
+About:
+------
+PCP: a parallel copy program for lustre.
+
+
+Requirements:
+-------------
+pcp requires the following:
+
+mpi4py 
+http://mpi4py.scipy.org/
+
+Lustre C api library, liblustreapi.so
+(see below on how to get it.)
+
+liblustreapi.so installation
+----------------------------
+
+The lustre client currently ships a static version of liblustreapi,
+not a dynamic one.
+
+You can covert the static version of of library into a dynamic 
+version by doing the following:
+
+ar -x liblustreapi.a
+gcc -shared -fpic -o lublustreapi.so *.o
+
+Place the resulting library in the same directory as lustre.py, which
+should be on your $PYTHONPATH, or in the same directory as pcp.
+
+Usage
+-----
+
+pcp is similar to cp -r ; simply give it a source directory and destination
+and pcp will recursively copy the source directory to the destination in
+parallel. 
+
+pcp has a number of useful options; use pcp -h to see a description.
+
+lustre striping
+---------------
+
+If run with the -l flag, pcp will be lustre stripe aware. When it encounters
+a striped file it will stripe the copy across all OSTs at the destination. Note
+that it does not exactly preserve stripe information, but copes with case where
+the number of OSTs is different at the source and destination.
+
+If a size is specified with -ls, pcp will not stripe files smaller than this,
+even if the original is striped.
+
+Other Useful Options
+--------------------
+
+A dead worker timeout can be specified with -d; if workers do not respond within
+timeout seconds of the job starting, the job will terminate.
+
+A minimum files size for striping can be set with -ls; files below that size
+will not be striped. This is useful in the case when a number of small files have
+been incorrectly striped.
+
+Invocation
+----------
+
+pcp should be invoked by mpirun, and needs at least 2 tasks to run correctly.
+
+For maximum efficiency, ensure tasks are spread across as many different
+machines as possible. Consult your queuing system and local MPI documentation
+for the appropraite commands.
+
+Example LSF bsub:
+
+bsub -R "span[ptile=1]" -oo logfile.txt -n 4  mpirun pcp ... 
