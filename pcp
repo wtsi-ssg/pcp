@@ -447,8 +447,8 @@ def copyFile (src,dst):
     return(0)
 
 def robustCopyFile(sourcepath,destpath):
-    """Copys a list of files from sourcedir to destdir.
-    Returns bytes copied).
+    """Copies a file from sourcedir to destdir.
+    Returns bytes copied.
     If it encounters and IO error (eg due to lustre
     eviction), it will retry the copy until MAXTRIES is exceeded."""
     global WARNINGS
