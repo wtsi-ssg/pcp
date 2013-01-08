@@ -14,9 +14,6 @@ pcp implements a master-slave pattern. R0 is the master and R1...RX are the slav
 R1 scan the source directory tree and put files to be copied on a queue on the master.
 The master dispatches files in the queue to ranks R1..RX, which do the copy.
 
-The scan and copies are asynchronous; file copies begin as soon as R0 has started
-the directory scan.
-
 """
 
 import argparse
