@@ -14,9 +14,6 @@ pcp implements a master-slave pattern. R0 is the master and R1...RX are the slav
 R1 scan the source directory tree and put files to be copied on a queue on the master.
 The master dispatches files in the queue to ranks R1..RX, which do the copy.
 
-The scan and copies are asynchronous; file copies begin as soon as R0 has started
-the directory scan.
-
 """
 
 import argparse
@@ -225,8 +222,9 @@ def ConsumeWork(sourcedir,destdir):
 
     # Poll for work.
     while 1:
-        comm.isend(("WAITING",rank),dest=0,tag=1)
+        message=comm.isend(("WAITING",rank),dest=0,tag=1)
         work=comm.recv(source=0,tag=1)
+        message.Wait()
         if work==None:
             break
 
@@ -290,9 +288,7 @@ def DispatchWork(filelist):
             OptimizeWorkUnitSize()
             # At the moment a workunit is 1 file.
             workunit=[filelist.pop()]
-            #We sould be safe to use nonblock send here as workers only
-            #go back into the queue once they have finished the copy.
-            comm.isend(workunit,dest=worker,tag=1)
+            comm.send(workunit,dest=worker,tag=1)
 
 def OptimizeWorkUnitSize():
     """We can make small file copies more efficient by bunching them up into a single work request.
@@ -307,7 +303,7 @@ def ShutdownWorkers(starttime):
     maxtime=0
     
     for r in range(1,workers):
-        comm.isend(None,dest=r,tag=1)
+        comm.send(None,dest=r,tag=1)
     data=comm.gather(0,root=0)
 
     # Gather the runtime statistics
@@ -473,8 +469,8 @@ def copyFile (src,dst):
     return(0)
 
 def robustCopyFile(sourcepath,destpath):
-    """Copys a list of files from sourcedir to destdir.
-    Returns bytes copied).
+    """Copies a file from sourcedir to destdir.
+    Returns bytes copied.
     If it encounters and IO error (eg due to lustre
     eviction), it will retry the copy until MAXTRIES is exceeded."""
     global WARNINGS

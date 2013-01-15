@@ -2,6 +2,13 @@ About:
 ------
 PCP: a parallel copy program for lustre.
 
+Latest Version:
+---------------
+
+The latest version of pcp can be downloaded from github:
+
+https://github.com/wtsi-ssg/pcp
+
 
 Requirements:
 -------------
