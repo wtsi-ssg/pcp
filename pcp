@@ -196,8 +196,9 @@ def ConsumeWork(sourcedir,destdir):
 
     # Poll for work.
     while 1:
-        comm.isend(("WAITING",rank),dest=0,tag=1)
+        message=comm.isend(("WAITING",rank),dest=0,tag=1)
         work=comm.recv(source=0,tag=1)
+        message.Wait()
         if work==None:
             break
 
@@ -261,9 +262,7 @@ def DispatchWork(filelist):
             OptimizeWorkUnitSize()
             # At the moment a workunit is 1 file.
             workunit=[filelist.pop()]
-            #We sould be safe to use nonblock send here as workers only
-            #go back into the queue once they have finished the copy.
-            comm.isend(workunit,dest=worker,tag=1)
+            comm.send(workunit,dest=worker,tag=1)
 
 def OptimizeWorkUnitSize():
     """We can make small file copies more efficient by bunching them up into a single work request.
@@ -278,7 +277,7 @@ def ShutdownWorkers(starttime):
     maxtime=0
     
     for r in range(1,workers):
-        comm.isend(None,dest=r,tag=1)
+        comm.send(None,dest=r,tag=1)
     data=comm.gather(0,root=0)
 
     # Gather the runtime statistics
