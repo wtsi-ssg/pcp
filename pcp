@@ -86,6 +86,10 @@ even if the original is striped.
 For maximum efficiency, ensure tasks are spread across as many different
 machines as possible using ptile=1 to prevent local network bottlenecks. 
 
+You should submit pcp jobs to the normal/long queues and not the parallel
+queue; machines in the parallel queue have less network bandwidth available
+than the main farm.
+
 Example bsub:
 
 bsub -R "span[ptile=1]" -oo logfile.txt -n 4  mpirun pcp ... """)
