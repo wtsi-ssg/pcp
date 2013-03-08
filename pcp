@@ -599,9 +599,10 @@ try:
         starttime=time.time()
         filelist,dirlist=scantree(sourcedir)
         if glob:
-            print "Will only copy files matching %s" %glob
+            totalfiles=len(filelist)
             filelist=fnmatch.filter(filelist,glob)
-
+            matchingfiles=len(filelist)
+            print "Will only copy files matching %s (%i of %i)" %(glob,matchingfiles,totalfiles)
         print "Copying directories..."
         copyDirectories(sourcedir,destdir,dirlist)
         print "Copying files..."
