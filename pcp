@@ -131,7 +131,7 @@ def sanitycheck(sourcedir,destdir):
     ensuring excessive parallelism is not used.
     """
     # holds the number of processes that each filesystem can support
-    maxprocfs={"/nfs":5,
+    maxprocfs={"/nfs":20,
                   "/warehouse":5,
                   "/lustre":100}
     
@@ -139,7 +139,7 @@ def sanitycheck(sourcedir,destdir):
         fullpath=os.path.realpath(path)
 
         for filesystem in maxprocfs:
-            if fullpath.startswith(filesystem) and workers >= maxprocfs[filesystem]:
+            if fullpath.startswith(filesystem) and workers > maxprocfs[filesystem]:
                 print
                 print "ERROR: attempting to copy to a %s directory with more than %i tasks." %(filesystem,maxprocfs[filesystem])
                 print "Please lower the amount of parallelism."
