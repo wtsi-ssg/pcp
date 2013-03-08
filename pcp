@@ -4,7 +4,7 @@
 # Author Guy Coates <gmpc@sanger.ac.uk>
 # This program is released under GNU Public License V2 (GPLv2)
 
-__version__="0.9"
+__version__="0.10"
 
 """ This program copies a directory tree in parallel.
 
@@ -17,6 +17,7 @@ The master dispatches files in the queue to ranks R1..RX, which do the copy.
 """
 
 import argparse
+import fnmatch
 import os
 import stat
 import sys
@@ -97,6 +98,7 @@ bsub -R "span[ptile=1]" -oo logfile.txt -n 4  mpirun pcp ... """)
     parser.add_argument("SOURCE",help="source directory")
     parser.add_argument("DEST",help="destination directory")
     parser.add_argument("-d",help="dead worker timeout (seconds)",default=10,type=int)
+    parser.add_argument("-g",help="only copy files matching glob",default=None)
     parser.add_argument("-n","--dry-run",help="perform a trial run with no copies made",action="store_true",default=False)
     parser.add_argument("-t",help="retry file copies N times in case of IO errors",type=int,metavar="N",default=1)
     parser.add_argument("-p",help="preserve ownership/permissions",default=False,action="store_true")
@@ -570,6 +572,7 @@ VERBOSE=args.v    # Should we be verbose
 sourcedir=args.SOURCE.rstrip(os.path.sep) # source
 destdir=args.DEST.rstrip(os.path.sep)  # destination
 timeout=args.d # dead worker timeout
+glob=args.g    # only copy files matching glob
 
 filelist=[] # list of files to copy
 dirlist=[]  # list of directories to copy
@@ -595,6 +598,10 @@ try:
         sanitycheck(sourcedir,destdir)
         starttime=time.time()
         filelist,dirlist=scantree(sourcedir)
+        if glob:
+            print "Will only copy files matching %s" %glob
+            filelist=fnmatch.filter(filelist,glob)
+
         print "Copying directories..."
         copyDirectories(sourcedir,destdir,dirlist)
         print "Copying files..."
