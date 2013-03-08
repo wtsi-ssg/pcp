@@ -204,8 +204,10 @@ def ConsumeWork(sourcedir,destdir):
 
         for item in work:
             destination=mungePath(sourcedir,destdir,item)
-            bytescopied+=robustCopyFile(item,destination)
-            tasksdone+=1
+            bytes,status=robustCopyFile(item,destination)
+            if status == 0:
+                bytescopied+=bytes
+                tasksdone+=1
 
 
     endtime=time.time()
@@ -444,12 +446,12 @@ def copyFile (src,dst):
 
 def robustCopyFile(sourcepath,destpath):
     """Copies a file from sourcedir to destdir.
-    Returns bytes copied.
+    Returns (bytes copied,status). status=0 if the copy worked, or 1 if it failed.
     If it encounters and IO error (eg due to lustre
     eviction), it will retry the copy until MAXTRIES is exceeded."""
     global WARNINGS
-
     size=0
+    status=0
     if DRYRUN:
         if VERBOSE:
             print "R%i: %s" %(rank,sourcepath)
@@ -470,10 +472,12 @@ def robustCopyFile(sourcepath,destpath):
                     print "%s (%s/s)" %(prettyPrint(size),prettyPrint(speed))
                 break
             except IOError,error:
-                # we don't care about permission denied errors.
+                # Permission denied errors are not fatal. We emit a warning and
+                # carry on.
                 if error.errno==13:
                     print "WARNING: permission denied on %s" %(sourcepath)
                     WARNINGS+=1
+                    status=1
                     break
                 else:
                     i+=1
@@ -481,8 +485,9 @@ def robustCopyFile(sourcepath,destpath):
                     WARNINGS+=1
                     if i==MAXTRIES:
                         print "ERROR: Max number of retries on %s exceeded" %(sourcepath)
+                        status=1
                         raise error
-    return(size)
+    return(size,status)
 
 def prettyPrint(bytes):
     """convert bytes to k/M/G/T etc"""
