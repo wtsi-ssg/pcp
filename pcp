@@ -104,7 +104,9 @@ bsub -R "span[ptile=1]" -oo logfile.txt -n 4  mpirun pcp ... """)
     parser.add_argument("-p",help="preserve ownership/permissions",default=False,action="store_true")
     parser.add_argument("-v",help="verbose",default=False,action="store_true")
     parser.add_argument("-V","--version",help="print version number",action='version',version=os.path.basename(sys.argv[0])+ " version "+__version__)
-    parser.add_argument("-l",help="be lustre stripe aware",default=False,action="store_true")
+    group=parser.add_mutually_exclusive_group()
+    group.add_argument("-l",help="copy lustre stripe information",default=False,action="store_true")
+    group.add_argument("-lf",help="Force striping of all files. Can be combined with -ls.",default=False,action="store_true")
     parser.add_argument("-ls",help="do not stripe files smaller than B bytes. Implies -l. Size can be suffixed with k,M,G,T,P",metavar="B",default=0)
 
     if len(sys.argv)==1:
@@ -146,11 +148,11 @@ def sanitycheck(sourcedir,destdir):
                 print
                 Abort()
     # if lustre option is set, check we are on a lustre filesystem.
-    if LSTRIPE:
+    if LSTRIPE or FORCESTRIPE:
         try:
             layout=lustre.getstripe(sourcedir)
         except IOError,error:
-            if error.errno==2:
+            if error.errno==25:
                 print "ERROR: %s is not a lustre directory but lustre stripe preservation is set." %sourcedir
                 print "Exiting."
                 Abort()
@@ -358,9 +360,11 @@ def createDir(sourcedir,destdir):
                 print "R%i WARNING: Unable to set permissions on %s" %(rank,destdir)
                 WARNINGS+=1
 
-    if LSTRIPE:
-        layout=lustre.getstripe(sourcedir)
-        if layout.isstriped():
+    if LSTRIPE or FORCESTRIPE:
+        if LSTRIPE:
+            layout=lustre.getstripe(sourcedir)
+
+        if (LSTRIPE and layout.isstriped()) or FORCESTRIPE:
             if VERBOSE:
                 print "(striped)",
             lustre.setstripe(destdir,stripecount=-1)
@@ -409,9 +413,11 @@ def copyFile (src,dst):
     # regular files
     if stat.S_ISREG(mode):
         
-        if LSTRIPE:
-            layout=lustre.getstripe(src)
-            if layout.isstriped():
+        if LSTRIPE or FORCESTRIPE:
+            if LSTRIPE:
+                layout=lustre.getstripe(src)
+
+            if (LSTRIPE and layout.isstriped()) or FORCESTRIPE:
                 if size < MINSTRIPESIZE:
                     if VERBOSE:
                         print "(small file, ignoring striping)",
@@ -567,6 +573,8 @@ MAXTRIES=args.t      # number of retries on IO error
 PRESERVE=args.p      # preserve permissions etc
 LSTRIPE=args.l       # preserve lustre information
 MINSTRIPESIZE=args.ls  # don't stripe for files smaller than this
+FORCESTRIPE=args.lf   # Stripe all files regardless of source striping
+
 WARNINGS=0 # number of warning
 VERBOSE=args.v    # Should we be verbose
 sourcedir=args.SOURCE.rstrip(os.path.sep) # source
@@ -592,8 +600,12 @@ try:
             print "Starting %i processes." %workers
         if LSTRIPE:
             print "Will copy lustre stripe information."
-            if MINSTRIPESIZE>0:
+        if FORCESTRIPE:
+            print "Will force stripe all files."
+
+        if (LSTRIPE or FORCESTRIPE) and  MINSTRIPESIZE>0:
                 print "Will not stripe files smaller than %s"  %prettyPrint(MINSTRIPESIZE)
+
         checkAlive(rank,workers,timeout)
         sanitycheck(sourcedir,destdir)
         starttime=time.time()
