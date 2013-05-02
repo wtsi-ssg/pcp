@@ -115,9 +115,6 @@ def getstripe(filename):
         err=0-err
         raise IOError(err,os.strerror(err))
 
-    for i in range(0,lovdata.lmm_stripe_count):
-        stripeobj.ostobjects.append(lovdata.lmm_objects[i])
-
     # workaround for Whamcloud LU-541
     # use the filesystem defaults if no properties set
     if err == -61  :
@@ -126,6 +123,9 @@ def getstripe(filename):
         stripeobj.stripeoffset=-1
 
     else:
+        for i in range(0,lovdata.lmm_stripe_count):
+            stripeobj.ostobjects.append(lovdata.lmm_objects[i])
+
         stripeobj.stripecount=lovdata.lmm_stripe_count
         stripeobj.stripesize=lovdata.lmm_stripe_size
         # lmm_stripe_offset seems to be reported as 0, which is wrong
