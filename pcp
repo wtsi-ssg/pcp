@@ -38,10 +38,6 @@ http://mediawiki.internal.sanger.ac.uk/wiki/index.php/How_to_run_MPI_jobs_on_the
 """
     raise
 
-
-DEBUG=1
-import random
-
 # Ctypes boilerplate for readdir/opendir/closedir
 clib=ctypes.CDLL("libc.so.6",use_errno=True)
 
