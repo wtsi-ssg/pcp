@@ -17,6 +17,7 @@ The master dispatches files in the queue to ranks R1..RX, which do the copy.
 """
 
 import argparse
+import hashlib
 import fnmatch
 import os
 import stat
@@ -36,6 +37,10 @@ ERROR: Your environment needs to be configured for MPI.
 http://mediawiki.internal.sanger.ac.uk/wiki/index.php/How_to_run_MPI_jobs_on_the_farm
 """
     raise
+
+
+DEBUG=1
+import random
 
 # Ctypes boilerplate for readdir/opendir/closedir
 clib=ctypes.CDLL("libc.so.6",use_errno=True)
@@ -63,6 +68,38 @@ closedir.restype=ctypes.c_int
 readdir=clib.readdir
 readdir.argtypes=[c_dir_p]
 readdir.restype=dirent_p
+
+
+class timer:
+    def __init__(self):
+        self.running=False
+        self.elapsedtime=0
+        self.stoptime=0
+        self.starttime=0
+
+    def reset(self):
+        self.__init__()
+
+    def start(self):
+        self.running=True
+        self.starttime=time.time()
+
+    def stop(self):
+        self.running=False
+        self.stoptime=time.time()
+        self.elapsedtime+=self.stoptime-self.starttime
+
+    def read(self):
+        if self.running:
+            return (time.time()-self.starttime)+self.elapsedtime
+        else:
+            return self.elapsedtime
+
+class filestate:
+    def __init__(self,filename):
+        self.filename=filename
+        self.srcmd5=None
+        self.attempt=1
 
 
 def parseargs():
@@ -94,9 +131,10 @@ than the main farm.
 Example bsub:
 
 bsub -R "span[ptile=1]" -oo logfile.txt -n 4  mpirun pcp ... """)
-                                   
+
     parser.add_argument("SOURCE",help="source directory")
     parser.add_argument("DEST",help="destination directory")
+    parser.add_argument("-c",help="verify copy with checksum",default=False,action="store_true")
     parser.add_argument("-d",help="dead worker timeout (seconds)",default=10,type=int)
     parser.add_argument("-g",help="only copy files matching glob",default=None)
     parser.add_argument("-n","--dry-run",help="perform a trial run with no copies made",action="store_true",default=False)
@@ -136,7 +174,7 @@ def sanitycheck(sourcedir,destdir):
     maxprocfs={"/nfs":20,
                   "/warehouse":5,
                   "/lustre":100}
-    
+
     for path in sourcedir,destdir:
         fullpath=os.path.realpath(path)
 
@@ -157,10 +195,10 @@ def sanitycheck(sourcedir,destdir):
                 print "Exiting."
                 Abort()
     #Create the top level destdir if it does not already exist
-    robustCreateDir(sourcedir,destdir)
+    attemptCreateDir(sourcedir,destdir)
 
 def scantree(sourcedir):
-    """Scans sourcedir recursively and returns a list of files and a list of directories."""
+    """Scans sourcedir recursively and returns a list of filestate objects and a list of directories."""
     filelist=[]
     dirlist=[]
 
@@ -172,7 +210,7 @@ def scantree(sourcedir):
     for entry in fastwalk(sourcedir):
         source,dirs,files=entry
         dirlist.extend([(os.path.join(source,d)) for d in dirs ])
-        filelist.extend([(os.path.join(source,f)) for f in files])
+        filelist.extend([filestate(os.path.join(source,f)) for f in files])
 
     endtime=time.time()
     walltime=endtime-startime
@@ -222,32 +260,123 @@ def fastwalk (sourcedir):
         for entries in fastwalk(fullname):
             yield entries
 
+
+def md5copy(src,dst,blksize):
+    hash=hashlib.new("md5")
+    infile=open(src,"rb")
+    outfile=open(dst,"wb")
+
+    while True:
+        data=infile.read(blksize)
+        if not data:
+            break
+        outfile.write(data)
+        hash.update(data)
+    infile.close()
+    outfile.close()
+    digest=hash.hexdigest()
+    return(digest)
+
+
+def calcmd5(filename):
+    """calculate the md5sum of a file. Returns a tuple of  (md5sum,amount of data checksummed), or (None,0) if there was a problem"""
+    hash=hashlib.new("md5")
+
+    # Use the optimal blocksize for IO.
+    try:
+        stat=os.stat(filename)
+        blksize=stat.st_blksize
+        size=stat.st_size
+        fh=open(filename,"rb")
+
+    # dangling symlinks are allowable: we return None in this case.
+    except OSError,error:
+        if error.errno==2:
+            return(None,0)
+    except IOError,error:
+        if error.errno==2:
+            return(None,0)
+
+    while True:
+        data=fh.read(blksize)
+        if not data:
+            break
+        hash.update(data)
+    fh.close()
+    digest=hash.hexdigest()
+
+    return(digest,size)
+
+
 def ConsumeWork(sourcedir,destdir):
     """Take an item from the workqueue and copy it from sourcedir to destdir"""
-    tasksdone=0
+    global WARNINGS
+
+    filescopied=0
+    md5done=0
     bytescopied=0
-    starttime=time.time()
+    byteschksummed=0
+
+    md5timer=timer()
+    copytimer=timer()
 
     # Poll for work.
-    while 1:
-        message=comm.isend(("WAITING",rank),dest=0,tag=1)
-        work=comm.recv(source=0,tag=1)
+
+    message=comm.isend(("WAITING",None,None,rank,0),dest=0,tag=1)
+    while True:
+        data=comm.recv(source=0,tag=1)
         message.Wait()
-        if work==None:
+        if data=="SHUTDOWN":
             break
 
-        for item in work:
-            destination=mungePath(sourcedir,destdir,item)
-            bytes,status=robustCopyFile(item,destination)
+        action,filename,idx,attempt=data
+        md5sum=None
+        destination=mungePath(sourcedir,destdir,filename)
+
+        if action=="COPY":
+            copytimer.start()
+            try:
+                bytes,md5sum=attemptCopyFile(filename,destination)
+                status=0
+
+            except IOError,error:
+                # permission denied errors are not fatal. Skip over the file and carry on.
+                if error.errno==13:
+                    print "WARNING: permission denied on %s" %(filename)
+                    WARNINGS+=1
+                    status=13
+            except:
+                if attempt==MAXTRIES:
+                    print "R%i: ERROR: Max number of retries on copy reached on %s" %(rank,filename)
+                    raise
+                print "R%i: WARNING: Error copying %s on attempt %i" %(rank,filename,attempt)
+                WARNINGS+=1
+                status=1
+
             if status == 0:
                 bytescopied+=bytes
-                tasksdone+=1
+                filescopied+=1
+            message=comm.isend(("COPYRESULT",md5sum,idx,rank,status),dest=0,tag=1)
+            copytimer.stop()
+
+        if action=="MD5":
+            md5timer.start()
+            try:
+                md5sum,size=calcmd5(destination)
+                status=0
+            except:
+                if attempt==MAXTRIES:
+                    print "R%i: ERROR: Max number of retries on md5calc reached on %s" %(rank,destination)
+                    raise
+                status=1
+            message=comm.isend(("MD5RESULT",md5sum,idx,rank,status),dest=0,tag=1)
+            md5done+=1
+            byteschksummed+=size
+            md5timer.stop()
 
 
-    endtime=time.time()
-    elapsedtime=endtime-starttime
     # Return stats
-    comm.gather((tasksdone,bytescopied,elapsedtime,WARNINGS),root=0)
+    comm.gather((filescopied,md5done,bytescopied,byteschksummed,copytimer.read(),md5timer.read(),WARNINGS),root=0)
     print "rank %i shutdown" %rank
     return(0)
 
@@ -255,11 +384,11 @@ def copyDirectories(sourcedir,destdir,dirlist):
     """Copy a list of directories (dirlist) from sourcedir to destdir"""
     for d in dirlist:
         destination=mungePath(sourcedir,destdir,d)
-        robustCreateDir(d,destination)
+        attemptCreateDir(d,destination)
 
 
 def checkAlive(rank,workers,timeout):
-    """Quirky farm nodes can cause the MPI runtime to lock up during the task spawn. This routine  
+    """Quirky farm nodes can cause the MPI runtime to lock up during the task spawn. This routine
     checks whether nodes can exchange messages. If a node has not responded after timeout seconds we bail."""
 
     if rank > 0:
@@ -283,22 +412,72 @@ def checkAlive(rank,workers,timeout):
         Abort()
 
 
-def DispatchWork(filelist):
+def DispatchWork(copylist):
     """pop idle workers and the next workunit from the queue and dispatch them."""
-
+    # Queue containing worker who are ready for work.
     idleworkers=deque()
-    while len(filelist) > 0:
+    copyidx=0
+    md5idx=0
+    md5list=[]
+    global WARNINGS
+
+    # loop until we have no more work to do and all of the workers have reported back in.
+    while copyidx < len(copylist) or md5idx < len(md5list) or len(idleworkers) < workers-1:
+
+        # Listen for workers reporting in and deal with the results
         if comm.Iprobe(source=MPI.ANY_SOURCE,tag=1):
-            status,data=comm.recv(source=MPI.ANY_SOURCE,tag=1)
-            idleworkers.appendleft(data)
+            action,md5sum,idx,rank,status=comm.recv(source=MPI.ANY_SOURCE,tag=1)
+            idleworkers.appendleft(rank)
+
+            if action=="COPYRESULT":
+                if status==0:
+                    # put the file on the md5list
+                    copylist[idx].srcmd5=md5sum
+                    md5list.append(copylist[idx])
+                elif status==13:
+                    # permission denied on the source; skip the file.
+                    pass
+                else:
+                    # put the file back on the end of the copylist to try again.
+                    copylist[idx].attempt+=1
+                    copylist.append(copylist[idx])
+
+            if action=="MD5RESULT":
+                if status==0:
+                    if md5list[idx].srcmd5==md5sum:
+                        if VERBOSE:
+                            print "R%i: %s md5sum verified (%s)" %(rank,md5list[idx].filename,md5sum)
+                    else:
+                        # This is bad; we got a md5 mismatch, but no IO exceptions were thrown.
+                        print "R%i: WARNING: SILENT DATA CORRUPTION %s md5sum mismatch  (%s:%s). Re-queuing copy %i." %(rank,md5list[idx].filename,md5list[idx].srcmd5,md5sum,md5list[idx].attempt)
+                        WARNINGS+=1
+                        if md5list[idx].attempt<MAXTRIES:
+                            md5list[idx].attempt+=1
+                            copylist.append(md5list[idx])
+                        else:
+                            print "ERROR: Max number of copies reached on %s." %(md5list[idx].filename)
+                            Abort()
+                            
+                else:
+                    print "R%i: WARNING: Error calculating destination md5sum of %s. Re-queuing copy attempt %i." %(rank,md5list[idx].filename,md5list[idx].attempt)
+                    md5list[idx].attempt+=1
+                    copylist.append(md5list[idx])
+
 
         # try for dispatch
         if len(idleworkers) > 0:
-            worker=idleworkers.pop()
-            OptimizeWorkUnitSize()
-            # At the moment a workunit is 1 file.
-            workunit=[filelist.pop()]
-            comm.send(workunit,dest=worker,tag=1)
+
+            if  copyidx < len(copylist):
+                worker=idleworkers.pop()
+                comm.send(("COPY",copylist[copyidx].filename,copyidx,copylist[copyidx].attempt),dest=worker,tag=1)
+                copyidx+=1
+
+            elif md5idx < len(md5list):
+                if MD5SUM:
+                    worker=idleworkers.pop()
+                    comm.send(("MD5",md5list[md5idx].filename,md5idx,md5list[md5idx].attempt),dest=worker,tag=1)
+                md5idx+=1
+
 
 def OptimizeWorkUnitSize():
     """We can make small file copies more efficient by bunching them up into a single work request.
@@ -313,7 +492,7 @@ def ShutdownWorkers(starttime):
     maxtime=0
     
     for r in range(1,workers):
-        comm.send(None,dest=r,tag=1)
+        comm.send("SHUTDOWN",dest=r,tag=1)
     data=comm.gather(0,root=0)
 
     # Gather the runtime statistics
@@ -325,13 +504,21 @@ def ShutdownWorkers(starttime):
     print ""
 
     for r in range(1,workers):
-        filescopied=data[r][0]
-        bytescopied=data[r][1]
-        elapsedtime=data[r][2]
-        totalwarnings+=data[r][3]
+        filescopied,md5done,bytescopied,byteschksummed,copytime,md5time,taskwarning=data[r]
+        totalwarnings+=taskwarning
         totalfiles+=filescopied
         totalbytes+=bytescopied
-        print "Rank %i copied %s in %i files (%s/s)" %(r,prettyPrint(bytescopied),filescopied,prettyPrint(bytescopied/elapsedtime))
+
+        # If tasks did not do anything, set time=1; prevent div by zero in the stats calcs below.
+        if filescopied==0:
+            copytime=1
+        if md5done==0:
+            md5time=1
+
+        print "Rank %i copied %s in %i files (%s/s)" %(r,prettyPrint(bytescopied),filescopied,prettyPrint(bytescopied/copytime))
+        if MD5SUM:
+            print "Rank %i checksummed %s in %i files (%s/s)" %(r,prettyPrint(byteschksummed),md5done,prettyPrint(byteschksummed/md5time))
+
     print "Total data copied: %s in %i files (%s/s)" %(prettyPrint(totalbytes),totalfiles,prettyPrint(totalbytes/totalelapsedtime))
     print "Warnings %i" %totalwarnings
 
@@ -345,7 +532,8 @@ def createDir(sourcedir,destdir):
         os.mkdir(destdir)
     except OSError,error:
         if error.errno<>17:
-            raise error
+            raise
+
     if PRESERVE:
         try:
             stat=os.lstat(sourcedir)
@@ -355,10 +543,11 @@ def createDir(sourcedir,destdir):
             # previous side; we might be copying someone else's data.
         except OSError,error:
             if error.errno<>1:
-                raise error
+                raise 
             else:
                 print "R%i WARNING: Unable to set permissions on %s" %(rank,destdir)
                 WARNINGS+=1
+
 
     if LSTRIPE or FORCESTRIPE:
         if LSTRIPE:
@@ -370,8 +559,10 @@ def createDir(sourcedir,destdir):
             lustre.setstripe(destdir,stripecount=-1)
         else:
             lustre.setstripe(destdir,stripecount=1)
+                
 
-def robustCreateDir(sourcedir,destdir):
+
+def attemptCreateDir(sourcedir,destdir):
     """Attempt to copy a directory. Retry the copy MAXTRIES in case of IO error."""
     global WARNINGS
     if DRYRUN:
@@ -391,7 +582,7 @@ def robustCreateDir(sourcedir,destdir):
                 WARNINGS+=1
                 if i==MAXTRIES:
                     print "ERROR: Max number of retries on %s exceeded" %(sourcedir)
-                    raise error
+                    raise
     return
 
 def mungePath(src,dst,f):
@@ -402,12 +593,14 @@ def mungePath(src,dst,f):
 
 def copyFile (src,dst):
     """Copy a file from src to dst. The copy is lustre stripe aware.
-    Returns bytes copied.
+    Returns bytes copied and the md5sum of the file.
     """
     
     srcstat=os.lstat(src)
     mode=srcstat.st_mode
     size=srcstat.st_size
+    blksize=srcstat.st_blksize
+    md5sum=None
     global WARNINGS
 
     # regular files
@@ -433,14 +626,18 @@ def copyFile (src,dst):
                 lustre.setstripe(dst,stripecount=count)
             except IOError,error:
                 if error.errno==17:
+                    #TODO: print a warning here.
                     # file exists; blow it away and try again...
                     os.remove(dst)
                     lustre.setstripe(dst,stripecount=count)
                 else:
-                    raise error
+                    raise 
                 
         if PRESERVE:
-            shutil.copy2(src,dst)
+            if MD5SUM:
+                md5sum=md5copy(src,dst,blksize)
+            else:    
+                shutil.copy2(src,dst)
             try:
                 os.chown(dst,srcstat.st_uid,srcstat.st_gid)
             except OSError,error:
@@ -448,10 +645,13 @@ def copyFile (src,dst):
                     print "R%i WARNING: Unable to preserve permissions on %s" %(rank,dst)
                     WARNINGS+=1
                 else:
-                    raise error
+                    raise 
         else:
-            shutil.copyfile(src,dst)
-        return(size)
+            if MD5SUM:
+                md5sum=md5copy(src,dst,blksize)
+            else:
+                shutil.copyfile(src,dst)
+        return(size,md5sum)
             
     # symlinks
     if stat.S_ISLNK(mode):
@@ -463,8 +663,10 @@ def copyFile (src,dst):
                 os.remove(dst)
                 os.symlink(linkto,dst)
             else:
-                raise error
-        return(0)
+                raise 
+        if MD5SUM:
+            md5sum,size=calcmd5(src)
+    return(0,md5sum)
 
     # special files
     filemode=stat.S_IFMT(mode)
@@ -480,52 +682,36 @@ def copyFile (src,dst):
         filetype="unknown"
     print "R%i WARNING: unable to copy (%s)" %(rank,filetype),
     WARNINGS+=1
-    return(0)
+    return(0,md5sum)
 
-def robustCopyFile(sourcepath,destpath):
+def attemptCopyFile(sourcepath,destpath):
     """Copies a file from sourcedir to destdir.
-    Returns (bytes copied,status). status=0 if the copy worked, or 1 if it failed.
+    Returns (bytes copied,status,md5sum). status=0 if the copy worked, or 1 if it failed.
+    md5sum is the file checksum of the source file.
     If it encounters and IO error (eg due to lustre
     eviction), it will retry the copy until MAXTRIES is exceeded."""
     global WARNINGS
     size=0
-    status=0
+    md5sum=None
+    
     if DRYRUN:
         if VERBOSE:
             print "R%i: %s" %(rank,sourcepath)
     else:
-        i=0
-        while i < MAXTRIES:
-            if VERBOSE:
-                print "R%i: %s" %(rank,sourcepath),
-            try:
-                starttime=time.time()
-                size=copyFile(sourcepath,destpath)
-                endtime=time.time()
-                if size==0:
-                    speed=0
-                else:
-                    speed=size/(endtime-starttime)
-                if VERBOSE:
-                    print "%s (%s/s)" %(prettyPrint(size),prettyPrint(speed))
-                break
-            except IOError,error:
-                # Permission denied errors are not fatal. We emit a warning and
-                # carry on.
-                if error.errno==13:
-                    print "WARNING: permission denied on %s" %(sourcepath)
-                    WARNINGS+=1
-                    status=1
-                    break
-                else:
-                    i+=1
-                    print "WARNING: Error copying %s on attempt %i"  %(sourcepath,i)
-                    WARNINGS+=1
-                    if i==MAXTRIES:
-                        print "ERROR: Max number of retries on %s exceeded" %(sourcepath)
-                        status=1
-                        raise error
-    return(size,status)
+        if VERBOSE:
+            print "R%i: %s" %(rank,sourcepath),
+    
+        starttime=time.time()
+        size,md5sum=copyFile(sourcepath,destpath)
+        endtime=time.time()
+        if size==0:
+            speed=0
+        else:
+            speed=size/(endtime-starttime)
+        if VERBOSE:
+            print "%s (%s/s)" %(prettyPrint(size),prettyPrint(speed))
+    return(size,md5sum)
+
 
 def prettyPrint(bytes):
     """convert bytes to k/M/G/T etc"""
@@ -568,6 +754,7 @@ def SIConvert(amount):
 # Main program
 
 args=parseargs() 
+MD5SUM=args.c      # checksum copy
 DRYRUN=args.dry_run  # Dry run
 MAXTRIES=args.t      # number of retries on IO error
 PRESERVE=args.p      # preserve permissions etc
@@ -582,7 +769,7 @@ destdir=args.DEST.rstrip(os.path.sep)  # destination
 timeout=args.d # dead worker timeout
 glob=args.g    # only copy files matching glob
 
-filelist=[] # list of files to copy
+filestatelist=[] # list of files to copy
 dirlist=[]  # list of directories to copy
 
 # Init MPI
@@ -602,23 +789,24 @@ try:
             print "Will copy lustre stripe information."
         if FORCESTRIPE:
             print "Will force stripe all files."
-
         if (LSTRIPE or FORCESTRIPE) and  MINSTRIPESIZE>0:
-                print "Will not stripe files smaller than %s"  %prettyPrint(MINSTRIPESIZE)
+            print "Will not stripe files smaller than %s"  %prettyPrint(MINSTRIPESIZE)
+        if MD5SUM:
+            print "Will md5 verify copies."
 
         checkAlive(rank,workers,timeout)
         sanitycheck(sourcedir,destdir)
         starttime=time.time()
-        filelist,dirlist=scantree(sourcedir)
+        filestatelist,dirlist=scantree(sourcedir)
         if glob:
-            totalfiles=len(filelist)
-            filelist=fnmatch.filter(filelist,glob)
-            matchingfiles=len(filelist)
+            totalfiles=len(filestatelist)
+            filestatelist=[f for f in filestatelist if fnmatch.fnmatch(f.filename,glob)]
+            matchingfiles=len(filestatelist)
             print "Will only copy files matching %s (%i of %i)" %(glob,matchingfiles,totalfiles)
         print "Copying directories..."
         copyDirectories(sourcedir,destdir,dirlist)
         print "Copying files..."
-        DispatchWork(filelist)
+        DispatchWork(filestatelist)
         ShutdownWorkers(starttime)
         print "Master process done."
         exit(0)
