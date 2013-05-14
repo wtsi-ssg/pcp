@@ -4,7 +4,7 @@
 # Author Guy Coates <gmpc@sanger.ac.uk>
 # This program is released under GNU Public License V2 (GPLv2)
 
-__version__="0.10"
+__version__="0.11"
 
 """ This program copies a directory tree in parallel.
 
@@ -279,19 +279,15 @@ def calcmd5(filename):
     hash=hashlib.new("md5")
 
     # Use the optimal blocksize for IO.
-    try:
-        stat=os.stat(filename)
-        blksize=stat.st_blksize
-        size=stat.st_size
-        fh=open(filename,"rb")
+    filestat=os.lstat(filename)
+    blksize=filestat.st_blksize
+    size=filestat.st_size
+    mode=filestat.st_mode
 
-    # dangling symlinks are allowable: we return None in this case.
-    except OSError,error:
-        if error.errno==2:
-            return(None,0)
-    except IOError,error:
-        if error.errno==2:
-            return(None,0)
+    if stat.S_ISLNK(mode):
+        return(None,0)
+    
+    fh=open(filename,"rb")
 
     while True:
         data=fh.read(blksize)
@@ -312,7 +308,6 @@ def ConsumeWork(sourcedir,destdir):
     md5done=0
     bytescopied=0
     byteschksummed=0
-
     md5timer=timer()
     copytimer=timer()
 
@@ -332,15 +327,14 @@ def ConsumeWork(sourcedir,destdir):
         if action=="COPY":
             copytimer.start()
             try:
-                bytes,md5sum=attemptCopyFile(filename,destination)
-                status=0
+                bytes,md5sum,status=attemptCopyFile(filename,destination)
 
             except IOError,error:
                 # permission denied errors are not fatal. Skip over the file and carry on.
                 if error.errno==13:
                     print "WARNING: permission denied on %s" %(filename)
                     WARNINGS+=1
-                    status=13
+                    status=2
             except:
                 if attempt==MAXTRIES:
                     print "R%i: ERROR: Max number of retries on copy reached on %s" %(rank,filename)
@@ -373,7 +367,8 @@ def ConsumeWork(sourcedir,destdir):
 
     # Return stats
     comm.gather((filescopied,md5done,bytescopied,byteschksummed,copytimer.read(),md5timer.read(),WARNINGS),root=0)
-    print "rank %i shutdown" %rank
+    if VERBOSE:
+        print "rank %i shutdown" %rank
     return(0)
 
 def copyDirectories(sourcedir,destdir,dirlist):
@@ -430,11 +425,11 @@ def DispatchWork(copylist):
                     # put the file on the md5list
                     copylist[idx].srcmd5=md5sum
                     md5list.append(copylist[idx])
-                elif status==13:
-                    # permission denied on the source; skip the file.
+                elif status == 2:
+                    # Non standard file; skip
                     pass
                 else:
-                    # put the file back on the end of the copylist to try again.
+                    # Copy enountered and error: put the file back on the end of the copylist to try again.
                     copylist[idx].attempt+=1
                     copylist.append(copylist[idx])
 
@@ -445,7 +440,8 @@ def DispatchWork(copylist):
                             print "R%i: %s md5sum verified (%s)" %(rank,md5list[idx].filename,md5sum)
                     else:
                         # This is bad; we got a md5 mismatch, but no IO exceptions were thrown.
-                        print "R%i: WARNING: SILENT DATA CORRUPTION %s md5sum mismatch  (%s:%s). Re-queuing copy %i." %(rank,md5list[idx].filename,md5list[idx].srcmd5,md5sum,md5list[idx].attempt)
+                        print "R%i: WARNING: SILENT DATA CORRUPTION %s md5sum mismatch  (%s:%s). Re-queuing copy %i." \
+                              %(rank,md5list[idx].filename,md5list[idx].srcmd5,md5sum,md5list[idx].attempt)
                         WARNINGS+=1
                         if md5list[idx].attempt<MAXTRIES:
                             md5list[idx].attempt+=1
@@ -473,7 +469,8 @@ def DispatchWork(copylist):
                     worker=idleworkers.pop()
                     comm.send(("MD5",md5list[md5idx].filename,md5idx,md5list[md5idx].attempt),dest=worker,tag=1)
                 md5idx+=1
-
+    if VERBOSE:
+        print "R0: No more work to do. Shutdown"
 
 def OptimizeWorkUnitSize():
     """We can make small file copies more efficient by bunching them up into a single work request.
@@ -486,9 +483,13 @@ def ShutdownWorkers(starttime):
     totalfiles=0
     totalbytes=0
     maxtime=0
+    if VERBOSE:
+        print "R0: Sending SHUTDOWN to workers"
     
     for r in range(1,workers):
         comm.send("SHUTDOWN",dest=r,tag=1)
+    if VERBOSE:
+        print "R0: Gathering results"
     data=comm.gather(0,root=0)
 
     # Gather the runtime statistics
@@ -589,7 +590,10 @@ def mungePath(src,dst,f):
 
 def copyFile (src,dst):
     """Copy a file from src to dst. The copy is lustre stripe aware.
-    Returns bytes copied and the md5sum of the file.
+    Returns (bytes copied,md5sum,status).
+    status = 0 # copy worked
+    status = 1 # IO error
+    status = 2 # non standard filetype 
     """
     
     srcstat=os.lstat(src)
@@ -647,7 +651,7 @@ def copyFile (src,dst):
                 md5sum=md5copy(src,dst,blksize)
             else:
                 shutil.copyfile(src,dst)
-        return(size,md5sum)
+        return(size,md5sum,0)
             
     # symlinks
     if stat.S_ISLNK(mode):
@@ -660,9 +664,7 @@ def copyFile (src,dst):
                 os.symlink(linkto,dst)
             else:
                 raise 
-        if MD5SUM:
-            md5sum,size=calcmd5(src)
-    return(0,md5sum)
+        return(0,md5sum,0)
 
     # special files
     filemode=stat.S_IFMT(mode)
@@ -676,9 +678,9 @@ def copyFile (src,dst):
         filetype="socket"
     else:
         filetype="unknown"
-    print "R%i WARNING: unable to copy (%s)" %(rank,filetype),
+    print "R%i WARNING: unable to copy %s (%s)" %(rank,src,filetype)
     WARNINGS+=1
-    return(0,md5sum)
+    return(0,md5sum,2)
 
 def attemptCopyFile(sourcepath,destpath):
     """Copies a file from sourcedir to destdir.
@@ -689,6 +691,7 @@ def attemptCopyFile(sourcepath,destpath):
     global WARNINGS
     size=0
     md5sum=None
+    status=0
     
     if DRYRUN:
         if VERBOSE:
@@ -698,7 +701,7 @@ def attemptCopyFile(sourcepath,destpath):
             print "R%i: %s" %(rank,sourcepath),
     
         starttime=time.time()
-        size,md5sum=copyFile(sourcepath,destpath)
+        size,md5sum,status=copyFile(sourcepath,destpath)
         endtime=time.time()
         if size==0:
             speed=0
@@ -706,7 +709,7 @@ def attemptCopyFile(sourcepath,destpath):
             speed=size/(endtime-starttime)
         if VERBOSE:
             print "%s (%s/s)" %(prettyPrint(size),prettyPrint(speed))
-    return(size,md5sum)
+    return(size,md5sum,status)
 
 
 def prettyPrint(bytes):
