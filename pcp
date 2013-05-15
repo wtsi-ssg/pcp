@@ -277,7 +277,7 @@ def md5copy(src,dst,blksize):
 
 
 def calcmd5(filename):
-    """calculate the md5sum of a file. Returns a tuple of  (md5sum,amount of data checksummed), or (None,0) if there was a problem"""
+    """calculate the md5sum of a file. Returns a tuple of  (md5sum,amount of data checksummed), or (None,0) in the case of symlinks."""
     hash=hashlib.new("md5")
 
     # Use the optimal blocksize for IO.
@@ -303,7 +303,7 @@ def calcmd5(filename):
 
 
 def ConsumeWork(sourcedir,destdir):
-    """Take an item from the workqueue and copy it from sourcedir to destdir"""
+    """Listen for work from the dispatcher and copies/md5sums files as appropriate."""
     global WARNINGS
 
     filescopied=0
@@ -419,8 +419,8 @@ def DispatchWork(copylist):
 
         # Listen for workers reporting in and deal with the results
         if comm.Iprobe(source=MPI.ANY_SOURCE,tag=1):
-            action,md5sum,idx,rank,status=comm.recv(source=MPI.ANY_SOURCE,tag=1)
-            idleworkers.appendleft(rank)
+            action,md5sum,idx,workerrank,status=comm.recv(source=MPI.ANY_SOURCE,tag=1)
+            idleworkers.appendleft(workerrank)
 
             if action=="COPYRESULT":
                 if status==0:
@@ -439,11 +439,11 @@ def DispatchWork(copylist):
                 if status==0:
                     if md5list[idx].srcmd5==md5sum:
                         if VERBOSE:
-                            print "R%i: %s md5sum verified (%s)" %(rank,md5list[idx].filename,md5sum)
+                            print "R%i: %s md5sum verified (%s)" %(workerrank,md5list[idx].filename,md5sum)
                     else:
                         # This is bad; we got a md5 mismatch, but no IO exceptions were thrown.
                         print "R%i: WARNING: SILENT DATA CORRUPTION %s md5sum mismatch  (%s:%s). Re-queuing copy %i." \
-                              %(rank,md5list[idx].filename,md5list[idx].srcmd5,md5sum,md5list[idx].attempt)
+                              %(workerrank,md5list[idx].filename,md5list[idx].srcmd5,md5sum,md5list[idx].attempt)
                         WARNINGS+=1
                         if md5list[idx].attempt<MAXTRIES:
                             md5list[idx].attempt+=1
@@ -453,7 +453,7 @@ def DispatchWork(copylist):
                             Abort()
                             
                 else:
-                    print "R%i: WARNING: Error calculating destination md5sum of %s. Re-queuing copy attempt %i." %(rank,md5list[idx].filename,md5list[idx].attempt)
+                    print "R%i: WARNING: Error calculating destination md5sum of %s. Re-queuing copy attempt %i." %(workerrank,md5list[idx].filename,md5list[idx].attempt)
                     md5list[idx].attempt+=1
                     copylist.append(md5list[idx])
 
