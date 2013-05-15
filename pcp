@@ -315,10 +315,9 @@ def ConsumeWork(sourcedir,destdir):
 
     # Poll for work.
 
-    message=comm.isend(("WAITING",None,None,rank,0),dest=0,tag=1)
+    comm.send(("WAITING",None,None,rank,0),dest=0,tag=1)
     while True:
         data=comm.recv(source=0,tag=1)
-        message.Wait()
         if data=="SHUTDOWN":
             break
 
@@ -348,7 +347,7 @@ def ConsumeWork(sourcedir,destdir):
             if status == 0:
                 bytescopied+=bytes
                 filescopied+=1
-            message=comm.isend(("COPYRESULT",md5sum,idx,rank,status),dest=0,tag=1)
+            comm.send(("COPYRESULT",md5sum,idx,rank,status),dest=0,tag=1)
             copytimer.stop()
 
         if action=="MD5":
@@ -361,7 +360,7 @@ def ConsumeWork(sourcedir,destdir):
                     print "R%i: ERROR: Max number of retries on md5calc reached on %s" %(rank,destination)
                     raise
                 status=1
-            message=comm.isend(("MD5RESULT",md5sum,idx,rank,status),dest=0,tag=1)
+            comm.send(("MD5RESULT",md5sum,idx,rank,status),dest=0,tag=1)
             md5done+=1
             byteschksummed+=size
             md5timer.stop()
