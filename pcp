@@ -4,6 +4,8 @@
 # Author Guy Coates <gmpc@sanger.ac.uk>
 # This program is released under GNU Public License V2 (GPLv2)
 
+#import rpdb2 ; rpdb2.start_embedded_debugger("XXX", fAllowRemote=True,timeout=1)
+
 __version__="0.11"
 
 """ This program copies a directory tree in parallel.
