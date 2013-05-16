@@ -201,9 +201,9 @@ def scantree(sourcedir):
     filelist=[]
     dirlist=[]
 
-    print "R1: Scanning list of files to copy..."
+    print "R%i: Scanning list of files to copy..." %(rank)
     if not  os.path.isdir(sourcedir):
-        print "R1: Error: %s not a directory" %sourcedir
+        print "R%i: Error: %s not a directory" %(rank,sourcedir)
         exit (1)
     startime=time.time()
     for entry in fastwalk(sourcedir):
@@ -216,7 +216,7 @@ def scantree(sourcedir):
     totalfiles=len(filelist)
     totaldirs=len(dirlist)
     rate=(totalfiles+totaldirs)/walltime
-    print "R1: Scan Done. Did %i files, %i dirs in %i seconds" %(totalfiles,totaldirs,walltime)
+    print "R%i: Scan Done. Did %i files, %i dirs in %i seconds" %(rank,totalfiles,totaldirs,walltime)
     return(filelist,dirlist)
 
 def fastwalk (sourcedir):
@@ -228,7 +228,7 @@ def fastwalk (sourcedir):
     global WARNINGS
     dirp=opendir(sourcedir)
     if not bool(dirp):
-        print "R1 WARNING: Cannot open %s:"  %(sourcedir),
+        print "R%i WARNING: Cannot open %s:"  %(rank,sourcedir),
         print os.strerror(ctypes.get_errno())
         WARNINGS+=1
     else:
