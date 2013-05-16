@@ -318,7 +318,6 @@ def ConsumeWork(sourcedir,destdir):
 
     # Poll for work.
 
-    comm.send(("WAITING",None,None,rank,0),dest=0,tag=1)
     while True:
         data=comm.recv(source=0,tag=1)
         if data=="SHUTDOWN":
@@ -416,6 +415,8 @@ def DispatchWork(copylist):
     md5idx=0   # which item to dispatch next from the md5list 
     md5list=[] # list of files to be md5summed
     global WARNINGS
+
+    idleworkers.extend(range(1,workers))
 
     # loop until we have no more work to send and  all of the workers have reported back in.
     while copyidx < len(copylist) or md5idx < len(md5list) or len(idleworkers) < workers-1:
