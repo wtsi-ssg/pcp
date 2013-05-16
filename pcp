@@ -338,13 +338,13 @@ def ConsumeWork(sourcedir,destdir):
                     print "WARNING: permission denied on %s" %(filename)
                     WARNINGS+=1
                     status=2
-            except:
-                if attempt==MAXTRIES:
-                    print "R%i: ERROR: Max number of retries on copy reached on %s" %(rank,filename)
-                    raise
-                print "R%i: WARNING: Error copying %s on attempt %i" %(rank,filename,attempt)
-                WARNINGS+=1
-                status=1
+                else:
+                    if attempt==MAXTRIES:
+                        print "R%i: ERROR: Max number of retries on copy reached on %s" %(rank,filename)
+                        raise
+                    print "R%i: WARNING: Error copying %s on attempt %i" %(rank,filename,attempt)
+                    WARNINGS+=1
+                    status=1
 
             if status == 0:
                 bytescopied+=bytes
@@ -355,12 +355,14 @@ def ConsumeWork(sourcedir,destdir):
         if action=="MD5":
             md5timer.start()
             try:
+                # TODO: skip if we don't run for real
                 md5sum,size=calcmd5(destination)
                 status=0
             except:
                 if attempt==MAXTRIES:
                     print "R%i: ERROR: Max number of retries on md5calc reached on %s" %(rank,destination)
                     raise
+                size=0
                 status=1
             comm.send(("MD5RESULT",md5sum,idx,rank,status),dest=0,tag=1)
             md5done+=1
