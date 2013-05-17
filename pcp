@@ -558,18 +558,22 @@ def createDir(sourcedir,destdir):
                 print "R%i WARNING: Unable to set permissions on %s" %(rank,destdir)
                 WARNINGS+=1
 
+    try:
+        if LSTRIPE or FORCESTRIPE:
+            if LSTRIPE:
+                layout=lustre.getstripe(sourcedir)
 
-    if LSTRIPE or FORCESTRIPE:
-        if LSTRIPE:
-            layout=lustre.getstripe(sourcedir)
-
-        if (LSTRIPE and layout.isstriped()) or FORCESTRIPE:
-            if VERBOSE:
-                print "(striped)",
-            lustre.setstripe(destdir,stripecount=-1)
+            if (LSTRIPE and layout.isstriped()) or FORCESTRIPE:
+                if VERBOSE:
+                    print "(striped)",
+                lustre.setstripe(destdir,stripecount=-1)
+            else:
+                lustre.setstripe(destdir,stripecount=1)
+    except IOError,error:
+        if error.errno<>13:
+            raise
         else:
-            lustre.setstripe(destdir,stripecount=1)
-                
+            print "R%i WARNING: Unable to set striping on %s" %(rank,destdir)
 
 
 def attemptCreateDir(sourcedir,destdir):
