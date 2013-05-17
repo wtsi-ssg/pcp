@@ -242,7 +242,7 @@ def fastwalk (sourcedir):
                 if filetype=="\x00":
                     # Filesystem does not support d_type, so we hae to do the stat.
                     fullname=os.path.join(sourcedir,name)
-                    mode=os.lstat(fullname).st_mode
+                    mode=safestat(fullname).st_mode
                     if stat.S_ISDIR(mode):
                         filetype="\x04"
                     else:
@@ -283,7 +283,7 @@ def calcmd5(filename):
     hash=hashlib.new("md5")
 
     # Use the optimal blocksize for IO.
-    filestat=os.lstat(filename)
+    filestat=safestat(filename)
     blksize=filestat.st_blksize
     size=filestat.st_size
     mode=filestat.st_mode
@@ -357,6 +357,7 @@ def ConsumeWork(sourcedir,destdir):
             if DRYRUN:
                 size=0
                 status=0
+                md5sum="DEADBEAFdeadbeafDEADBEAFdeadbeaf"
             else:
                 try:
                     md5sum,size=calcmd5(destination)
@@ -545,7 +546,7 @@ def createDir(sourcedir,destdir):
 
     if PRESERVE:
         try:
-            stat=os.lstat(sourcedir)
+            stat=safestat(sourcedir)
             os.chmod(destdir,stat.st_mode)
             os.chown(destdir,stat.st_uid,stat.st_gid)
             # Don't worry if we can't set the permissions/uid to be the same as the
@@ -600,6 +601,19 @@ def mungePath(src,dst,f):
     dest=dst+suffix
     return(dest)
 
+
+def safestat(filename):
+    """lstat sometimes get Interrupted system calls; wrap it up so we can retry"""
+    while True:
+        try:
+            statdata=os.lstat(filename)
+            return(statdata)
+        except IOError,error:
+            if error.errno<>4:
+                raise
+
+
+
 def copyFile (src,dst):
     """Copy a file from src to dst. The copy is lustre stripe aware.
     Returns (bytes copied,md5sum,status).
@@ -608,7 +622,7 @@ def copyFile (src,dst):
     status = 2 # non standard filetype 
     """
     
-    srcstat=os.lstat(src)
+    srcstat=safestat(src)
     mode=srcstat.st_mode
     size=srcstat.st_size
     blksize=srcstat.st_blksize
@@ -708,6 +722,7 @@ def attemptCopyFile(sourcepath,destpath):
     if DRYRUN:
         if VERBOSE:
             print "R%i: %s" %(rank,sourcepath)
+        md5sum="DEADBEAFdeadbeafDEADBEAFdeadbeaf"
     else:
         if VERBOSE:
             print "R%i: %s" %(rank,sourcepath),
