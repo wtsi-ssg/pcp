@@ -676,6 +676,9 @@ def copyFile (src,dst):
                     shutil.copy2(src,dst)
                 try:
                     os.chown(dst,srcstat.st_uid,srcstat.st_gid)
+                    os.chmod(dst,srcstat.st_mode)
+                    os.utime(dst,(srcstat.st_atime,srcstat.st_mtime))
+
                 except OSError,error:
                     if error.errno==1:
                         print "R%i WARNING: Unable to preserve permissions on %s" %(rank,dst)
@@ -698,7 +701,9 @@ def copyFile (src,dst):
             
     # symlinks
     if stat.S_ISLNK(mode):
-        if not DRYRUN:
+        if DRYRUN:
+            md5sum="DEADBEAFdeadbeafDEADBEAFdeadbeaf"
+        else:
             linkto=os.readlink(src)
             try:
                 os.symlink(linkto,dst)
