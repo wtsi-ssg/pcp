@@ -204,7 +204,7 @@ def scantree(sourcedir):
     print "R%i: Scanning list of files to copy..." %(rank)
     if not  os.path.isdir(sourcedir):
         print "R%i: Error: %s not a directory" %(rank,sourcedir)
-        exit (1)
+        Abort()
     startime=time.time()
     for entry in fastwalk(sourcedir):
         source,dirs,files=entry
