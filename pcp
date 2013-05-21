@@ -790,11 +790,10 @@ def SIConvert(amount):
 def checkVersion():
     mpivendor,mpiversion=MPI.get_vendor()
     if mpivendor=="Open MPI":
-        if mpiversion < (1,6,3):
-            print ""
-            print "Please use a version of openMPI >= 1.6.4; earlier versions have bugs."
-            print  "Add openmpi-1.6.4 to your .softwarerc and re-login."
-            exit(1)
+        print "This program can trigger bugs in openmpi at scale."
+        print "Please use mpich instead; remove openmpi* from your"
+        print ".softwarerc and add mpich-3.0.4"
+        exit(1)
 
 # Main program
 
