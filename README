@@ -44,6 +44,13 @@ parallel.
 
 pcp has a number of useful options; use pcp -h to see a description.
 
+Checksum
+--------
+
+If run with the -c flag, pcp will md5 checksum files after they are copied.
+pcp tries, but does guarantee, to run the md5sum on a separate rank to that
+which did the copy. 
+
 lustre striping
 ---------------
 
@@ -55,15 +62,18 @@ the number of OSTs is different at the source and destination.
 If a size is specified with -ls, pcp will not stripe files smaller than this,
 even if the original is striped.
 
+If -lf is set, pcp will stripe all files at the destination. This options can
+be combined with -ls to force striping of files over a certain size.
+
 Other Useful Options
 --------------------
 
 A dead worker timeout can be specified with -d; if workers do not respond within
 timeout seconds of the job starting, the job will terminate.
 
-A minimum files size for striping can be set with -ls; files below that size
-will not be striped. This is useful in the case when a number of small files have
-been incorrectly striped.
+If run with -p, pcp will attempt to preserve the ownership, permissions and 
+timestamps of the copied files.
+
 
 Invocation
 ----------
