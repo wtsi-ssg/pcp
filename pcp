@@ -330,26 +330,25 @@ def ConsumeWork(sourcedir,destdir):
         if action=="COPY":
             copytimer.start()
             try:
-                bytes,md5sum,status=copyFile(filename,destination)
-
+                bytes,speed,md5sum,stripestatus,status=copyFile(filename,destination)
+            # TODO: check for errno==2; file moved whilst we copied it!
             except IOError,error:
                 # permission denied errors are not fatal. Skip over the file and carry on.
                 if error.errno==13:
-                    print "WARNING: permission denied on %s" %(filename)
                     WARNINGS+=1
-                    status=2
+                    status=3
                 else:
                     if attempt==MAXTRIES:
-                        print "R%i: ERROR: Max number of retries on copy reached on %s" %(rank,filename)
+                        print "R%i: WARNING: Error copying %s on attempt %i." %(rank,filename,attempt)
+                        print "R%i: ERROR: Max number of retries exceeded."
                         raise
-                    print "R%i: WARNING: Error copying %s on attempt %i" %(rank,filename,attempt)
                     WARNINGS+=1
                     status=1
 
-            if status == 0:
+            if status == 0 or status == 4 :
                 bytescopied+=bytes
                 filescopied+=1
-            comm.send(("COPYRESULT",md5sum,idx,rank,status),dest=0,tag=1)
+            comm.send(("COPYRESULT",md5sum,idx,rank,status,speed,bytes,stripestatus),dest=0,tag=1)
             copytimer.stop()
 
         if action=="MD5":
@@ -369,7 +368,7 @@ def ConsumeWork(sourcedir,destdir):
                     size=0
                     status=1
 
-            comm.send(("MD5RESULT",md5sum,idx,rank,status),dest=0,tag=1)
+            comm.send(("MD5RESULT",md5sum,idx,rank,status,None,None,None),dest=0,tag=1)
             md5done+=1
             byteschksummed+=size
             md5timer.stop()
@@ -377,8 +376,6 @@ def ConsumeWork(sourcedir,destdir):
 
     # Return stats
     comm.gather((filescopied,md5done,bytescopied,byteschksummed,copytimer.read(),md5timer.read(),WARNINGS),root=0)
-    if VERBOSE:
-        print "rank %i shutdown" %rank
     return(0)
 
 def copyDirectories(sourcedir,destdir,dirlist):
@@ -430,19 +427,38 @@ def DispatchWork(copylist):
 
         # Listen for workers reporting in and deal with the results
         if comm.Iprobe(source=MPI.ANY_SOURCE,tag=1):
-            action,md5sum,idx,workerrank,status=comm.recv(source=MPI.ANY_SOURCE,tag=1)
+            action,md5sum,idx,workerrank,status,speed,size,stripestatus=comm.recv(source=MPI.ANY_SOURCE,tag=1)
             idleworkers.appendleft(workerrank)
 
             if action=="COPYRESULT":
-                if status==0:
+                if status==0 or status==4:
                     # put the file on the md5list
                     copylist[idx].srcmd5=md5sum
                     md5list.append(copylist[idx])
+                    if VERBOSE:
+                        stripetxt=""
+                        if LSTRIPE or FORCESTRIPE:
+                            if stripestatus==1:
+                                stripetxt="(striped)"
+                            elif stripestatus==0:
+                                stripetxt="(unstriped)"
+                            elif stripestatus==-1:
+                                stripetxt="(small file: ignored striping)"
+                            
+                        print "R%i: copied %s %s %s (%s/s)" \
+                              %(workerrank,copylist[idx].filename,stripetxt,prettyPrint(size),prettyPrint(speed))
+                        if status == 4:
+                            # unabel to preserve permissions
+                            print "R%i: WARNING: unable to preserve attributes on %s" %(workerrank,copylist[idx].filename)
+                elif status == 3:
+                    # permission denied
+                    print "R%i: WARNING: permission denied on %s" %(workerrank,copylist[idx].filename)
                 elif status == 2:
-                    # Non standard file; skip
-                    pass
+                    # nonstandard filetype
+                    print "R%i: WARNING: unable to copy %s (%s)" %(workerrank,copylist[idx].filename,md5sum)
                 else:
                     # Copy enountered and error: put the file back on the end of the copylist to try again.
+                    print "R%i: WARNING: Error copying %s on attempt %i. Retrying..." %(workerrank,copylist[idx].filename,copylist[idx].attempt)
                     copylist[idx].attempt+=1
                     copylist.append(copylist[idx])
 
@@ -483,7 +499,7 @@ def DispatchWork(copylist):
                     comm.send(("MD5",md5list[md5idx].filename,md5idx,md5list[md5idx].attempt),dest=worker,tag=1)
                 md5idx+=1
     if VERBOSE:
-        print "R0: No more work to do. Shutdown"
+        print "R0: No more work to do."
 
 def OptimizeWorkUnitSize():
     """We can make small file copies more efficient by bunching them up into a single work request.
@@ -501,6 +517,9 @@ def ShutdownWorkers(starttime):
     
     for r in range(1,workers):
         comm.send("SHUTDOWN",dest=r,tag=1)
+        if VERBOSE:
+            print "rank %i shutdown" %r
+        
     if VERBOSE:
         print "R0: Gathering results"
     data=comm.gather(0,root=0)
@@ -620,22 +639,26 @@ def safestat(filename):
 
 def copyFile (src,dst):
     """Copy a file from src to dst. The copy is lustre stripe aware.
-    Returns (bytes copied,md5sum,status).
+    Returns (bytes copied,speed,md5sum,stripestatus,status).
     status = 0 # copy worked
     status = 1 # IO error
-    status = 2 # non standard filetype 
+    status = 2 # non standard filetype
+    status = 3 # permission denied
+    status = 4 # unable to preserve permissions
     """
     
+    md5sum=None
+    global WARNINGS
+    speed=0
+    status=0
+    stripestatus=0   # 0 non-striped, 1 striped, -1, ignored.
+    starttime=time.time()
+
     srcstat=safestat(src)
     mode=srcstat.st_mode
     size=srcstat.st_size
     blksize=srcstat.st_blksize
-    md5sum=None
-    global WARNINGS
 
-    status=""
-    starttime=time.time()
-    
     # regular files
     if stat.S_ISREG(mode):
         
@@ -645,12 +668,10 @@ def copyFile (src,dst):
 
             if (LSTRIPE and layout.isstriped()) or FORCESTRIPE:
                 if size < MINSTRIPESIZE:
-                    if VERBOSE:
-                        status+="(small file, ignoring striping)"
+                    stripestatus=-1
                     count=1
                 else:
-                    if VERBOSE:
-                        status+="(striped)"
+                    stripestatus=1
                     count=-1
             else:
                 count=1
@@ -660,7 +681,6 @@ def copyFile (src,dst):
                     lustre.setstripe(dst,stripecount=count)
                 except IOError,error:
                     if error.errno==17:
-                        #TODO: print a warning here.
                         # file exists; blow it away and try again...
                         os.remove(dst)
                         lustre.setstripe(dst,stripecount=count)
@@ -668,10 +688,7 @@ def copyFile (src,dst):
                         raise 
                 
         if DRYRUN:
-            size=0
             md5sum="DEADBEAFdeadbeafDEADBEAFdeadbeaf"
-            if VERBOSE:
-                print "R%i: copied %s (dry-run)" %(rank,src)
         else:
             if PRESERVE:
                 if MD5SUM:
@@ -682,10 +699,10 @@ def copyFile (src,dst):
                     os.chown(dst,srcstat.st_uid,srcstat.st_gid)
                     os.chmod(dst,srcstat.st_mode)
                     os.utime(dst,(srcstat.st_atime,srcstat.st_mtime))
-
                 except OSError,error:
+                    # Can preserve the permissions
                     if error.errno==1:
-                        print "R%i WARNING: Unable to preserve permissions on %s" %(rank,dst)
+                        status=4
                         WARNINGS+=1
                     else:
                         raise 
@@ -700,8 +717,7 @@ def copyFile (src,dst):
                     speed=0
                 else:
                     speed=size/(endtime-starttime)
-                print "R%i: copied %s %s %s (%s/s)" %(rank,src,status,prettyPrint(size),prettyPrint(speed))
-        return(size,md5sum,0)
+        return(size,speed,md5sum,stripestatus,status)
             
     # symlinks
     if stat.S_ISLNK(mode):
@@ -717,9 +733,7 @@ def copyFile (src,dst):
                     os.symlink(linkto,dst)
                 else:
                     raise 
-        if VERBOSE:
-            print "R%i: copied %s (symlink)" %(rank,src)
-        return(0,md5sum,0)
+        return(0,0,md5sum,0,0)
 
     # special files
     filemode=stat.S_IFMT(mode)
@@ -733,9 +747,8 @@ def copyFile (src,dst):
         filetype="socket"
     else:
         filetype="unknown"
-    print "R%i WARNING: unable to copy %s (%s)" %(rank,src,filetype)
     WARNINGS+=1
-    return(0,md5sum,2)
+    return(0,0,filetype,0,2)
 
 def prettyPrint(bytes):
     """convert bytes to k/M/G/T etc"""
