@@ -333,6 +333,9 @@ def ConsumeWork(sourcedir,destdir):
                 bytes,speed,md5sum,stripestatus,status=copyFile(filename,destination)
             # TODO: check for errno==2; file moved whilst we copied it!
             except IOError,error:
+                speed=0
+                bytes=0
+                stripestatus=0
                 # permission denied errors are not fatal. Skip over the file and carry on.
                 if error.errno==13:
                     WARNINGS+=1
