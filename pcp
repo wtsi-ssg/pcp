@@ -331,7 +331,6 @@ def ConsumeWork(sourcedir,destdir):
             copytimer.start()
             try:
                 bytes,speed,md5sum,stripestatus,status=copyFile(filename,destination)
-            # TODO: check for errno==2; file moved whilst we copied it!
             except IOError,error:
                 speed=0
                 bytes=0
@@ -347,6 +346,13 @@ def ConsumeWork(sourcedir,destdir):
                         raise
                     WARNINGS+=1
                     status=1
+            # File does not exist: probably moved during the copy.
+            except OSError,error:
+                if error.errno==2:
+                    WARNINGS+=1
+                    status=5
+                else:
+                    raise
 
             if status == 0 or status == 4 :
                 bytescopied+=bytes
@@ -461,9 +467,22 @@ def DispatchWork(copylist):
                     print "R%i: WARNING: unable to copy %s (%s)" %(workerrank,copylist[idx].filename,md5sum)
                 else:
                     # Copy enountered and error: put the file back on the end of the copylist to try again.
-                    print "R%i: WARNING: Error copying %s on attempt %i. Retrying..." %(workerrank,copylist[idx].filename,copylist[idx].attempt)
-                    copylist[idx].attempt+=1
-                    copylist.append(copylist[idx])
+                    # If the file does not exist, we treat that as non-fatal, as the user might simply have
+                    # moved the file during the copy.
+                    if status == 5:
+                        if copylist[idx].attempt < MAXTRIES:
+                            print "R%i: WARNING: %s does not exist on attempt %i. Retrying..." \
+                                  %(workerrank,copylist[idx].filename,copylist[idx].attempt)
+                            copylist[idx].attempt+=1
+                            copylist.append(copylist[idx])
+                        else:
+                            print "R%i: WARNING %s does not exist: on attempt %i. Maybe someone moved the file? Skipping it..." \
+                                  %(rank,copylist[idx].filename,copylist[idx].attempt)
+                    else:
+                        print "R%i: WARNING: Error copying %s on attempt %i. Retrying..." \
+                              %(workerrank,copylist[idx].filename,copylist[idx].attempt)
+                        copylist[idx].attempt+=1
+                        copylist.append(copylist[idx])
 
             if action=="MD5RESULT":
                 if status==0:
@@ -648,6 +667,7 @@ def copyFile (src,dst):
     status = 2 # non standard filetype
     status = 3 # permission denied
     status = 4 # unable to preserve permissions
+    status = 5 # file does not exist
     """
     
     md5sum=None
