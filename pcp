@@ -24,7 +24,6 @@ import fnmatch
 import os
 import stat
 import sys
-import shutil
 import traceback
 import time
 import ctypes
@@ -58,6 +57,7 @@ closedir.restype=ctypes.c_int
 readdir=clib.readdir
 readdir.argtypes=[c_dir_p]
 readdir.restype=dirent_p
+
 
 
 class timer:
@@ -229,18 +229,33 @@ def fastwalk (sourcedir):
             yield entries
 
 
-def md5copy(src,dst,blksize):
-    """Combined copy / md5 calcuation function. Copies data from src to dst in blksize chunks. Returns the md5sum of the source."""
+def fadviseSeqNoCache(fileD):
+    """Advise the kernel that we are only going to access file-descriptor fileD once, sequentially."""
+    POSIX_FADV_SEQUENTIAL = 2
+    POSIX_FADV_DONTNEED = 4
+    offset = ctypes.c_int64(0)
+    length = ctypes.c_int64(0)
+    clib.posix_fadvise(fileD, offset, length, POSIX_FADV_SEQUENTIAL)
+    clib.posix_fadvise(fileD, offset, length, POSIX_FADV_DONTNEED)
+    
+
+
+def md5copy(src,dst,blksize,MD5SUM):
+    """Combined copy / md5 calcuation function. Copies data from src to dst in blksize chunks. If MD5SUM is true,
+    it also calculates the md5sum of the file. Returns the md5sum of the source."""
     hash=hashlib.new("md5")
     infile=open(src,"rb")
     outfile=open(dst,"wb")
-
+    fadviseSeqNoCache(infile.fileno())
+    fadviseSeqNoCache(outfile.fileno())
     while True:
         data=infile.read(blksize)
         if not data:
             break
         outfile.write(data)
-        hash.update(data)
+        if MD5SUM:
+            hash.update(data)
+
     infile.close()
     outfile.close()
     digest=hash.hexdigest()
@@ -261,6 +276,7 @@ def calcmd5(filename):
         return(None,0)
     
     fh=open(filename,"rb")
+    fadviseSeqNoCache(fh.fileno())
 
     while True:
         data=fh.read(blksize)
@@ -683,10 +699,8 @@ def copyFile (src,dst):
             md5sum="DEADBEAFdeadbeafDEADBEAFdeadbeaf"
         else:
             if PRESERVE:
-                if MD5SUM:
-                    md5sum=md5copy(src,dst,blksize)
-                else:    
-                    shutil.copy2(src,dst)
+                md5sum=md5copy(src,dst,blksize,MD5SUM)
+                
                 try:
                     os.chown(dst,srcstat.st_uid,srcstat.st_gid)
                     os.chmod(dst,srcstat.st_mode)
@@ -699,10 +713,8 @@ def copyFile (src,dst):
                     else:
                         raise 
             else:
-                if MD5SUM:
-                    md5sum=md5copy(src,dst,blksize)
-                else:
-                    shutil.copyfile(src,dst)
+                md5sum=md5copy(src,dst,blksize,MD5SUM)
+                
             if VERBOSE:
                 endtime=time.time()
                 if size==0:
