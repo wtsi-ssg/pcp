@@ -347,7 +347,8 @@ def ConsumeWork(sourcedir,destdir):
             copytimer.start()
             try:
                 bytes,speed,md5sum,stripestatus,status=copyFile(filename,destination)
-            except IOError,error:
+
+            except (IOError,OSError) as error:
                 speed=0
                 bytes=0
                 stripestatus=0
@@ -355,6 +356,10 @@ def ConsumeWork(sourcedir,destdir):
                 if error.errno==13:
                     WARNINGS+=1
                     status=3
+                # File might have moved whilst we copied it!
+                elif error.errno==2:
+                    WARNINGS+=1
+                    status=5
                 else:
                     if attempt==MAXTRIES:
                         print "R%i: WARNING: Error copying %s on attempt %i." %(rank,filename,attempt)
@@ -362,13 +367,6 @@ def ConsumeWork(sourcedir,destdir):
                         raise
                     WARNINGS+=1
                     status=1
-            # File does not exist: probably moved during the copy.
-            except OSError,error:
-                if error.errno==2:
-                    WARNINGS+=1
-                    status=5
-                else:
-                    raise
 
             if status == 0 or status == 4 :
                 bytescopied+=bytes
@@ -694,6 +692,7 @@ def copyFile (src,dst):
     starttime=time.time()
 
     srcstat=safestat(src)
+
     mode=srcstat.st_mode
     size=srcstat.st_size
     blksize=srcstat.st_blksize
@@ -768,6 +767,15 @@ def copyFile (src,dst):
                     os.symlink(linkto,dst)
                 else:
                     raise 
+            if PRESERVE:
+                try:
+                    os.lchown(dst,srcstat.st_uid,srcstat.st_gid)
+                except OSError,error:
+                    if error.errno==1:
+                        status=4
+                        WARNINGS+=1
+                    else:
+                        raise
         return(0,0,md5sum,0,0)
 
     # special files
