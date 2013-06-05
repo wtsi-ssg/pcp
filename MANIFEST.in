@@ -1,0 +1,3 @@
+include LICENCE
+include _version.py
+exclude lustre/liblustreapi.so

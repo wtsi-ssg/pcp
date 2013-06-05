@@ -17,23 +17,50 @@ pcp requires the following:
 mpi4py 
 http://mpi4py.scipy.org/
 
-Lustre C api library, liblustreapi.so
-(see below on how to get it.)
+Lustre C api library, liblustreapi.so or liblustreapi.a
 
-liblustreapi.so installation
-----------------------------
 
-The lustre client currently ships a static version of liblustreapi,
-not a dynamic one.
+Installation
+------------
 
-You can covert the static version of of library into a dynamic 
-version by doing the following:
+Install pcp using the usual distutils method:
+
+python setup.py build
+python setup.py install #  usually requires root access
+
+If running as a non priviliged user, you can install in your home directory 
+by running:
+
+python setup.py install --user
+
+If you have the lustreapi libraries install in a non-standard location, you
+can use the following option to setup.py 
+
+--with-liblustre=/path/to/library
+
+
+liblustreapi
+------------
+
+lustre clients prior to v 2.3 shipped with a static version of liblustreapi 
+rather than a dynamic one. pcp requires a dynamic library. The build process 
+will look for liblustreapi.so first.  If it does not find one, it will look for
+liblustreapi.a and then convert it into a shared library. The shared library
+will be installed alongside the python module.
+
+Manual liblustreapi installation
+--------------------------------
+
+If setup.py is unable to convert the library automatically, you can try doing
+it by hand. The procedure to convert the library is something along these 
+lines:
 
 ar -x liblustreapi.a
-gcc -shared -fpic -o lublustreapi.so *.o
+gcc -shared -o lublustreapi.so *.o
 
-Place the resulting library in the same directory as lustre.py, which
-should be on your $PYTHONPATH, or in the same directory as pcp.
+Place the resulting library in the /lustre directory in the source tree, and 
+then re-run the setup.py build / install step.
+
 
 Usage
 -----
@@ -80,10 +107,14 @@ Invocation
 
 pcp should be invoked by mpirun, and needs at least 2 tasks to run correctly.
 
-For maximum efficiency, ensure tasks are spread across as many different
-machines as possible. Consult your queuing system and local MPI documentation
-for the appropraite commands.
+For maximum efficiency, ensure tasks are spread across the cluster to maximise
+network bandwidth to the filesystem. On most systems that means spreading tasks
+across as many machines as possible, rather than packing them together on as 
+few hosts as possible.
 
-Example LSF bsub:
+Consult your queuing system and local MPI documentation for the 
+appropriate commands to achieve this.
+
+Example LSF bsub distributing jobs across as many hosts as possible:
 
 bsub -R "span[ptile=1]" -oo logfile.txt -n 4  mpirun pcp ... 
