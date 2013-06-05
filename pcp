@@ -115,11 +115,9 @@ If a size is specified with -ls, pcp will not stripe files smaller than this,
 even if the original is striped.
 
 For maximum efficiency, ensure tasks are spread across as many different
-machines as possible using ptile=1 to prevent local network bottlenecks.
+machines as possible to prevent local network bottlenecks.
 
-Example bsub:
-
-bsub -R "span[ptile=1]" -oo logfile.txt -n 4  mpirun pcp ... """)
+""")
 
     parser.add_argument("SOURCE", help="source directory")
     parser.add_argument("DEST", help="destination directory")
