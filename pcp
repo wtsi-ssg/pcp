@@ -856,6 +856,7 @@ def SIConvert(amount):
     return(number * (1024 ** multi))
 
 def checkVersion():
+    """Check the MPI version for known buggy versions."""
     mpivendor, mpiversion = MPI.get_vendor()
     if mpivendor == "Open MPI":
         print "WARNING: appears to have problems with openmpi on"
