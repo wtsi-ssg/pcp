@@ -102,9 +102,12 @@ def print_help():
     print ""
     print ("This modules requires the liblustreapi C library.\n"
            "It should be installed as part of the lustre client package.\n" 
-           "Note that earlier versions of the client only ship a statically\n"
-           "linked version of the library. setup.py will covert the static\n"
-           "library to a dynamic one as part of the build process.")
+           "If the library is installed in a non standard location,\n"
+		   "use the following option to setup.py to point to the\n"
+		   "libary location:\n"
+		   "\n"
+		   "--with-liblustre=/path/to/library"
+		   )
     print ""
 
 def convert_liblustre(lib_location):
