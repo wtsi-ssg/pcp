@@ -15,8 +15,6 @@ which do the copy."""
 #import rpdb2
 #rpdb2.start_embedded_debugger(XXXX, fAllowRemote=True,timeout=1)
 
-__version__ = "0.11"
-
 import argparse
 import hashlib
 import fnmatch
@@ -26,9 +24,12 @@ import sys
 import traceback
 import time
 import ctypes
-import lustre
+from lustre import lustreapi
 from collections import deque
 from mpi4py import MPI
+import pkg_resources
+
+__version__ = pkg_resources.require("pcp")[0].version
 
 # Ctypes boilerplate for readdir/opendir/closedir
 clib = ctypes.CDLL("libc.so.6", use_errno=True)
@@ -177,7 +178,7 @@ def sanitycheck(sourcedir, destdir):
     # if lustre option is set, check we are on a lustre filesystem.
     if LSTRIPE or FORCESTRIPE:
         try:
-            lustre.getstripe(sourcedir)
+            lustreapi.getstripe(sourcedir)
         except IOError, error:
             if error.errno == 25:
                 print ("ERROR: %s is not a lustre directory but lustre stripe"
@@ -647,14 +648,14 @@ def createDir(sourcedir, destdir):
     try:
         if LSTRIPE or FORCESTRIPE:
             if LSTRIPE:
-                layout = lustre.getstripe(sourcedir)
+                layout = lustreapi.getstripe(sourcedir)
 
             if (LSTRIPE and layout.isstriped()) or FORCESTRIPE:
                 if VERBOSE:
                     print "(striped)",
-                lustre.setstripe(destdir, stripecount=-1)
+                lustreapi.setstripe(destdir, stripecount=-1)
             else:
-                lustre.setstripe(destdir, stripecount=1)
+                lustreapi.setstripe(destdir, stripecount=1)
     except IOError, error:
         if error.errno != 13:
             raise
@@ -731,7 +732,7 @@ def copyFile (src, dst):
     if stat.S_ISREG(mode):
         if LSTRIPE or FORCESTRIPE:
             if LSTRIPE:
-                layout = lustre.getstripe(src)
+                layout = lustreapi.getstripe(src)
             if (LSTRIPE and layout.isstriped()) or FORCESTRIPE:
                 if size < MINSTRIPESIZE:
                     stripestatus = -1
@@ -743,12 +744,12 @@ def copyFile (src, dst):
                 count = 1
             if not DRYRUN:
                 try:
-                    lustre.setstripe(dst, stripecount=count)
+                    lustreapi.setstripe(dst, stripecount=count)
                 except IOError, error:
                     if error.errno == 17:
                         # file exists; blow it away and try again...
                         os.remove(dst)
-                        lustre.setstripe(dst, stripecount=count)
+                        lustreapi.setstripe(dst, stripecount=count)
                     else:
                         raise
         if DRYRUN:
