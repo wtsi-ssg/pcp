@@ -182,7 +182,7 @@ def sanitycheck(sourcedir, destdir):
         except IOError, error:
             if error.errno == 25:
                 print ("ERROR: %s is not a lustre directory but lustre stripe"
-                       "preservation is set.") % sourcedir
+                       " preservation is set.") % sourcedir
                 print "Exiting."
                 Abort()
     #Create the top level destdir if it does not already exist
@@ -386,7 +386,7 @@ def ConsumeWork(sourcedir, destdir):
                 except:
                     if attempt == MAXTRIES:
                         print ("R%i: ERROR: Max number of retries on md5calc"
-                               "reached on %s") % (rank,destination)
+                               " reached on %s") % (rank,destination)
                         raise
                     size = 0
                     status = 1
@@ -428,7 +428,7 @@ def checkAlive(rank, workers, timeout):
                     print "R0: All workers have reported in."
                     return
         print ("Error: The following workers did not report in after"
-               "%i seconds") % timeout
+               " %i seconds") % timeout
         awol = expectedworkers.difference(aliveworkers)
         for i in awol:
             print "R%i" % i
@@ -478,7 +478,7 @@ def DispatchWork(copylist):
                         if status == 4:
                             # unabel to preserve permissions
                             print ("R%i: WARNING: unable to preserve"
-                                   "attributes on %s") \
+                                   " attributes on %s") \
                                    % (workerrank, copylist[idx].filename)
                 elif status == 3:
                     # permission denied
@@ -497,7 +497,7 @@ def DispatchWork(copylist):
                     if status == 5:
                         if copylist[idx].attempt < MAXTRIES:
                             print ("R%i: WARNING: %s does not exist on"
-                                   "attempt %i. Retrying..."
+                                   " attempt %i. Retrying..."
                                    % (workerrank,
                                       copylist[idx].filename,
                                       copylist[idx].attempt))
@@ -511,7 +511,7 @@ def DispatchWork(copylist):
                                       copylist[idx].attempt))
                     else:
                         print ("R%i: WARNING: Error copying %s on attempt %i"
-                               "Retrying..."
+                               " Retrying..."
                                % (workerrank, copylist[idx].filename,
                                   copylist[idx].attempt))
                         copylist[idx].attempt += 1
@@ -528,7 +528,7 @@ def DispatchWork(copylist):
                         # This is bad; we got a md5 mismatch, but no IO
                         # exceptions were thrown.
                         print ("R%i: WARNING: SILENT DATA CORRUPTION %s"
-                              "md5sum  mismatch (%s:%s). Re-queuing copy %i."
+                              " md5sum  mismatch (%s:%s). Re-queuing copy %i."
                                % (workerrank, md5list[idx].filename,
                                   md5list[idx].srcmd5, md5sum,
                                   md5list[idx].attempt))
@@ -543,7 +543,7 @@ def DispatchWork(copylist):
 
                 else:
                     print ("R%i: WARNING: Error calculating destination"
-                           "md5sum of %s. Re-queuing copy attempt %i."
+                           " md5sum of %s. Re-queuing copy attempt %i."
                            % (workerrank, md5list[idx].filename,
                               md5list[idx].attempt))
                     md5list[idx].attempt += 1
@@ -898,9 +898,9 @@ try:
         # master process
         if workers < 2:
             print ("ERROR: Only %i processes running. Did you invoke me via"
-                   "mpirun?") % workers
+                   " mpirun?") % workers
             print ("This program requires at least 2 processes to run"
-                   "correctly.")
+                   " correctly.")
             exit(0)
         else:
             print "Starting %i processes." % workers
