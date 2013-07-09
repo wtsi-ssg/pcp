@@ -635,6 +635,7 @@ def createDir(sourcedir, destdir):
             stat = safestat(sourcedir)
             os.chmod(destdir, stat.st_mode)
             os.chown(destdir, stat.st_uid, stat.st_gid)
+            os.utime(destdir, (stat.st_atime, stat.st_mtime))
             # Don't worry if we can't set the permissions/uid to be the same
             # as the previous side; we might be copying someone else's data.
         except OSError, error:
