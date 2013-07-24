@@ -175,6 +175,15 @@ def sanitycheck(sourcedir, destdir):
     """Perform some sanity checks, including creating the destination
     directory if it does not exist and ensuring excessive parallelism is not
     used."""
+
+    realsource = os.path.realpath(sourcedir)
+    realdest = os.path.realpath(destdir)
+    if realsource == realdest:
+        print 
+        print ("ERROR: Source and destination directory are the same!")
+        print
+        Abort()
+        
     # if lustre option is set, check we are on a lustre filesystem.
     if LSTRIPE or FORCESTRIPE:
         try:
@@ -915,8 +924,8 @@ try:
         if MD5SUM:
             print "Will md5 verify copies."
 
-        checkAlive(rank, workers, timeout)
         sanitycheck(sourcedir, destdir)
+        checkAlive(rank, workers, timeout)
         starttime = time.time()
         filestatelist, dirlist = scantree(sourcedir)
         if glob:
