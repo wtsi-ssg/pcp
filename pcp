@@ -199,9 +199,15 @@ def sanitycheck(sourcedir, destdir):
                  "/warehouse":5,
                  "/lustre":100}
 
-    for path in sourcedir, destdir:
-        fullpath = os.path.realpath(path)
-
+    realsource = os.path.realpath(sourcedir)
+    realdest = os.path.realpath(destdir)
+    if realsource == realdest:
+        print 
+        print ("ERROR: Source and destination directory are the same!")
+        print
+        Abort()
+        
+    for fullpath in realsource, realdest:
         for filesystem in maxprocfs:
             if fullpath.startswith(filesystem) and workers > \
                     maxprocfs[filesystem]:
@@ -951,8 +957,8 @@ try:
         if MD5SUM:
             print "Will md5 verify copies."
 
-        checkAlive(rank, workers, timeout)
         sanitycheck(sourcedir, destdir)
+        checkAlive(rank, workers, timeout)
         starttime = time.time()
         filestatelist, dirlist = scantree(sourcedir)
         if glob:
