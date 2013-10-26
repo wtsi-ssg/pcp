@@ -24,6 +24,8 @@ import sys
 import traceback
 import time
 import ctypes
+import sqlite3
+
 from lustre import lustreapi
 from collections import deque
 from mpi4py import MPI
@@ -88,14 +90,43 @@ class Timer:
         else:
             return self.elapsedtime
 
-class Filestate:
-    """Data structure to hold the filename, source md5sum and number of times
-    we have tried to copy it."""
-    def __init__(self, filename):
-        self.filename = filename
-        self.srcmd5 = None
-        self.attempt = 1
+def createDB():
+# This database holds all the information about files to be copied,
+# their checksums as well as the state of the copy.
+# State 
+# 0 Not copied.
+# 1 Dispatched for copy.
+# 2 Copy complete.
+# 3 Dispatched for md5
+# 4 md5 complete
 
+    filedb = sqlite3.connect(":memory:")
+    filedb.text_factory = str
+    filedb.row_factory = sqlite3.Row
+    filedb.execute("""CREATE TABLE FILECPY(
+ID INTEGER PRIMARY KEY AUTOINCREMENT,
+FILENAME TEXT,
+STATE INTEGER DEFAULT 0,
+SRCMD5 TEXT,
+SIZE INTEGER,
+ATTEMPTS INTEGER DEFAULT 0,
+LASTRANK INTEGER DEFAULT 0)""")
+    filedb.execute("""CREATE INDEX SIZE_IDX ON FILECPY(SIZE)""")
+    filedb.execute("""CREATE INDEX STATE_IDX ON FILECPY(STATE)""")
+    filedb.execute("""CREATE INDEX LAST_IDX ON FILECPY(LASTRANK)""")
+    return(filedb)
+
+# Dump the database out to disk
+def dumpDB(statedb, filename):
+    dbfile = open(filename, "wb")
+    for l in statedb.iterdump():
+        dbfile.write(l + "\n")
+    dbfile.close()
+
+# Restore the database state from a previous run so we
+# can resume a copy.
+def restoreDB():
+    pass
 
 def parseargs():
     parser = argparse.ArgumentParser(description=
@@ -197,10 +228,9 @@ def sanitycheck(sourcedir, destdir):
     #Create the top level destdir if it does not already exist
     attemptCreateDir(sourcedir, destdir)
 
-def scantree(sourcedir):
+def scantree(sourcedir, statedb):
     """Scans sourcedir recursively and returns a list of filestate objects and
     a list of directories."""
-    filelist = []
     dirlist = []
 
     print "R%i: Scanning list of files to copy..." % (rank)
@@ -208,20 +238,21 @@ def scantree(sourcedir):
         print "R%i: Error: %s not a directory" % (rank, sourcedir)
         Abort()
     startime = time.time()
-    for entry in fastwalk(sourcedir):
-        source, dirs, files = entry
+    for source, dirs, files in fastwalk(sourcedir):
         dirlist.extend([(os.path.join(source, d)) for d in dirs ])
-        filelist.extend([Filestate(os.path.join(source, f)) for f in files])
+        fullpath = [ (os.path.join(source,f),) for f in files ]
+        statedb.executemany("""INSERT INTO FILECPY (FILENAME) VALUES (?)""",
+                            fullpath)
 
     endtime = time.time()
     walltime = endtime - startime
-    totalfiles = len(filelist)
+    totalfiles = statedb.execute("SELECT COUNT(*) FROM FILECPY").fetchone()[0]
     totaldirs = len(dirlist)
     rate = (totalfiles + totaldirs) / walltime
     print ("R%i: Scan Done. Did %i files, %i dirs in %i seconds"
            " (%.0f items/sec)."
         % (rank, totalfiles, totaldirs, walltime, rate))
-    return(filelist, dirlist)
+    return(dirlist)
 
 def fastwalk (sourcedir):
     """Improved version of os.walk: generates a tuple of (sourcedir,[dirs],
@@ -327,7 +358,6 @@ def ConsumeWork(sourcedir, destdir):
     """Listen for work from the dispatcher and copies/md5sums files as
     appropriate. When send the SHUTDOWN message the worker will send
     performance stats back to the master."""
-    global WARNINGS
 
     filescopied = 0
     md5done = 0
@@ -337,13 +367,12 @@ def ConsumeWork(sourcedir, destdir):
     copytimer = Timer()
 
     # Poll for work.
-
     while True:
         data = comm.recv(source=0, tag=1)
         if data == "SHUTDOWN":
             break
 
-        action, filename, idx, attempt = data
+        action, filename, idx = data
         md5sum = None
         destination = mungePath(sourcedir, destdir, filename)
 
@@ -360,19 +389,11 @@ def ConsumeWork(sourcedir, destdir):
                 # permission denied errors are not fatal. Skip over the file
                 # and carry on.
                 if error.errno == 13:
-                    WARNINGS += 1
                     status = 3
                 # File might have moved whilst we copied it!
                 elif error.errno == 2:
-                    WARNINGS += 1
                     status = 5
                 else:
-                    if attempt == MAXTRIES:
-                        print "R%i: WARNING: Error copying %s on attempt %i." \
-                            % (rank, filename, attempt)
-                        print "R%i: ERROR: Max number of retries exceeded."
-                        raise
-                    WARNINGS += 1
                     status = 1
 
             if status == 0 or status == 4 :
@@ -392,11 +413,7 @@ def ConsumeWork(sourcedir, destdir):
                 try:
                     md5sum, size = calcmd5(destination)
                     status = 0
-                except:
-                    if attempt == MAXTRIES:
-                        print ("R%i: ERROR: Max number of retries on md5calc"
-                               " reached on %s") % (rank,destination)
-                        raise
+                except (IOError, OSError):
                     size = 0
                     status = 1
 
@@ -408,7 +425,7 @@ def ConsumeWork(sourcedir, destdir):
 
     # Return stats
     comm.gather((filescopied, md5done, bytescopied, byteschksummed,
-                 copytimer.read(), md5timer.read(), WARNINGS), root=0)
+                 copytimer.read(), md5timer.read()), root=0)
     return(0)
 
 def copyDirectories(sourcedir, destdir, dirlist):
@@ -443,22 +460,21 @@ def checkAlive(rank, workers, timeout):
             print "R%i" % i
         Abort()
 
-def DispatchWork(copylist):
+def DispatchWork(statedb):
     """The dispatcher sends  copy/md5 tasks out to idle workers. If copy/md5
     tasks fail the dispatcher will re-queue them for retries."""
+
+    global WARNINGS
     # Queue containing worker who are ready for work.
     idleworkers = deque()
-    copyidx = 0  # which item to dispatch next from the copylist
-    md5idx = 0   # which item to dispatch next from the md5list
-    md5list = [] # list of files to be md5summed
-    global WARNINGS
-
     idleworkers.extend(range(1, workers))
 
-    # loop until we have no more work to send and  all of the workers have
-    # reported back in.
-    while copyidx < len(copylist) or md5idx < len(md5list) or \
-            len(idleworkers) < workers-1:
+    # loop until we have no more work to send.
+    while True:
+        remains = statedb.execute \
+            ("""SELECT COUNT(*) FROM FILECPY WHERE STATE <> ?""",(ENDSTATE, )).fetchone()[0]
+        if remains == 0:
+            break
 
         # Listen for workers reporting in and deal with the results
         if comm.Iprobe(source=MPI.ANY_SOURCE, tag=1):
@@ -467,117 +483,175 @@ def DispatchWork(copylist):
             idleworkers.appendleft(workerrank)
 
             if action == "COPYRESULT":
-                if status == 0 or status == 4:
-                    # put the file on the md5list
-                    copylist[idx].srcmd5 = md5sum
-                    md5list.append(copylist[idx])
-                    if VERBOSE:
-                        stripetxt = ""
-                        if LSTRIPE or FORCESTRIPE:
-                            if stripestatus == 1:
-                                stripetxt = "(striped)"
-                            elif stripestatus == 0:
-                                stripetxt = "(unstriped)"
-                            elif stripestatus == -1:
-                                stripetxt = "(small file: ignored striping)"
-
-                        print "R%i: copied %s %s %s (%s/s)" \
-                              % (workerrank, copylist[idx].filename,stripetxt,
-                                 prettyPrint(size), prettyPrint(speed))
-                        if status == 4:
-                            # unabel to preserve permissions
-                            print ("R%i: WARNING: unable to preserve"
-                                   " attributes on %s") \
-                                   % (workerrank, copylist[idx].filename)
-                elif status == 3:
-                    # permission denied
-                    print "R%i: WARNING: permission denied on %s" \
-                        % (workerrank, copylist[idx].filename)
-                elif status == 2:
-                    # nonstandard filetype
-                    print "R%i: WARNING: unable to copy %s (%s)" \
-                        % (workerrank, copylist[idx].filename, md5sum)
-                else:
-                    # Copy enountered and error: put the file back on the end
-                    # of the copylist to try again.
-                    # If the file does not exist, we treat that as non-fatal,
-                    # as the user might simply have
-                    # moved the file during the copy.
-                    if status == 5:
-                        if copylist[idx].attempt < MAXTRIES:
-                            print ("R%i: WARNING: %s does not exist on"
-                                   " attempt %i. Retrying..."
-                                   % (workerrank,
-                                      copylist[idx].filename,
-                                      copylist[idx].attempt))
-                            copylist[idx].attempt += 1
-                            copylist.append(copylist[idx])
-                        else:
-                            print ("R%i: WARNING %s does not exist: on"
-                                   "attempt %i. Maybe someone moved the file?"
-                                   " Skipping it..."
-                                   % (rank, copylist[idx].filename,
-                                      copylist[idx].attempt))
-                    else:
-                        print ("R%i: WARNING: Error copying %s on attempt %i"
-                               " Retrying..."
-                               % (workerrank, copylist[idx].filename,
-                                  copylist[idx].attempt))
-                        copylist[idx].attempt += 1
-                        copylist.append(copylist[idx])
+                processCopy(statedb, md5sum, idx, workerrank, status, size, speed,
+                            stripestatus)
 
             if action == "MD5RESULT":
-                if status == 0:
-                    if md5list[idx].srcmd5 == md5sum:
-                        if VERBOSE:
-                            print "R%i: %s md5sum verified (%s)" \
-                                % (workerrank, md5list[idx].filename,
-                                   md5sum)
-                    else:
-                        # This is bad; we got a md5 mismatch, but no IO
-                        # exceptions were thrown.
-                        print ("R%i: WARNING: SILENT DATA CORRUPTION %s"
-                              " md5sum  mismatch (%s:%s). Re-queuing copy %i."
-                               % (workerrank, md5list[idx].filename,
-                                  md5list[idx].srcmd5, md5sum,
-                                  md5list[idx].attempt))
-                        WARNINGS += 1
-                        if md5list[idx].attempt < MAXTRIES:
-                            md5list[idx].attempt += 1
-                            copylist.append(md5list[idx])
-                        else:
-                            print "ERROR: Max number of copies reached on %s."\
-                                % md5list[idx].filename
-                            Abort()
-
-                else:
-                    print ("R%i: WARNING: Error calculating destination"
-                           " md5sum of %s. Re-queuing copy attempt %i."
-                           % (workerrank, md5list[idx].filename,
-                              md5list[idx].attempt))
-                    md5list[idx].attempt += 1
-                    copylist.append(md5list[idx])
+                processMD5(statedb, md5sum, idx, workerrank, status)
 
         # try for dispatch
         if len(idleworkers) > 0:
-            if  copyidx < len(copylist):
-                worker = idleworkers.pop()
-                comm.send(("COPY", copylist[copyidx].filename, copyidx,
-                           copylist[copyidx].attempt), dest=worker, tag=1)
-                copyidx += 1
+            worker = idleworkers.pop()
+            
+            # 2 workers is a special case; we can't do MD5sum or retries on
+            # a different nodes, as we only have 1 worker node.
+            if workers == 2:
+                lastrank = -1
+            else:
+                lastrank = worker
 
-            elif md5idx < len(md5list):
-                if MD5SUM:
-                    worker = idleworkers.pop()
-                    comm.send(("MD5", md5list[md5idx].filename, md5idx,
-                               md5list[md5idx].attempt), dest=worker, tag=1)
-                md5idx += 1
+            task = statedb.execute("""SELECT * FROM FILECPY WHERE STATE == 0 AND
+                                  LASTRANK <> ? LIMIT 1""",(lastrank, )).fetchone()
+            if task:
+                statedb.execute("""UPDATE FILECPY SET STATE = 1 WHERE ID = ?""",(task["ID"],))
+                comm.send(("COPY", task["FILENAME"], task["ID"]),
+                          dest=worker, tag=1)
+                continue
+
+            if MD5SUM:
+                task = statedb.execute("""SELECT * FROM FILECPY WHERE STATE == 2 AND
+                       LASTRANK <> ? ORDER BY SIZE DESC LIMIT 1""",(lastrank, )).fetchone()
+                if task:
+                    statedb.execute("""UPDATE FILECPY SET STATE = 3 WHERE ID = ?""",(task["ID"],))
+                    comm.send(("MD5", task["FILENAME"], task["ID"]),
+                              dest=worker, tag=1)
+                    continue
+            # There is work, but not for this worker. Send to the back of the queue
+            idleworkers.appendleft(worker)
+
     if VERBOSE:
         print "R0: No more work to do."
 
+def processMD5(statedb, md5sum, idx, workerrank, status):
+    global WARNINGS
+    filename, attempt, srcmd5 = statedb.execute("""SELECT FILENAME, ATTEMPTS, SRCMD5
+    FROM FILECPY WHERE ID = ?""",(idx,)).fetchone()
+    if status == 0:
+        if srcmd5 == md5sum:
+            statedb.execute("""UPDATE FILECPY SET STATE = 4
+                            WHERE ID = ?""", (idx,))
+            if VERBOSE:
+                print "R%i: %s md5sum verified (%s)" \
+                    % (workerrank, filename, md5sum)
+        else:
+            # This is bad; we got a md5 mismatch, but no IO
+            # exceptions were thrown.
+            attempt += 1 
+            statedb.execute("""UPDATE FILECPY SET STATE = 0, SRCMD5 = NULL, ATTEMPTS = ?,
+                            LASTRANK = ? WHERE ID =?""",(attempt, workerrank, idx))
+            if attempt < MAXTRIES:
+                WARNINGS +=1 
+                print ("R%i: WARNING: SILENT DATA CORRUPTION %s"
+                       " md5sum  mismatch (%s:%s). Re-queuing copy %i."
+                       % (workerrank, filename, srcmd5, md5sum, attempt))
+            else:
+                print "ERROR: Max number of copies reached on %s."\
+                    % filename
+                Abort()
+
+    else:
+        # md5 calc failed due to a detected error.
+        attempt += 1
+        statedb.execute("""UPDATE FILECPY SET ATTEMPTS = ?, LASTRANK = ?, STATE = 2
+                        WHERE ID =?""",(attempt, workerrank, idx))
+
+        if attempt < MAXTRIES:
+            WARNINGS += 1
+            print ("R%i: WARNING: Error calculating destination"
+                   " md5sum of %s. Re-attempting md5"
+                   % (workerrank, filename, attempt))
+        else:
+            print "ERROR: Max number of md5s reached on %s." % filename
+            Abort()
+
+
+def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripestatus):
+    global WARNINGS
+    filename, attempt = statedb.execute("""SELECT FILENAME, ATTEMPTS FROM FILECPY 
+                        WHERE ID = ?""",(idx, )).fetchone()
+
+    # Copy is complete. 
+    if status == 0 or status == 4:
+        statedb.execute("""UPDATE FILECPY SET STATE = 2, SRCMD5 = ?, LASTRANK = ?,
+                        SIZE = ? WHERE ID = ? """,(md5sum, workerrank, size, idx))
+
+        if VERBOSE:
+            stripetxt = ""
+            if LSTRIPE or FORCESTRIPE:
+                if stripestatus == 1:
+                    stripetxt = "(striped)"
+                elif stripestatus == 0:
+                    stripetxt = "(unstriped)"
+                elif stripestatus == -1:
+                    stripetxt = "(small file: ignored striping)"
+
+            print "R%i: copied %s %s %s (%s/s)" \
+                  % (workerrank, filename, stripetxt,
+                     prettyPrint(size), prettyPrint(speed))
+            if status == 4:
+                # unabel to preserve permissions
+                WARNINGS += 1
+                print ("R%i: WARNING: unable to preserve"
+                       " attributes on %s") \
+                       % (workerrank, filename)                       
+    # copy failed.
+    elif status ==1:
+        if attempt < MAXTRIES:
+            attempt += 1
+            statedb.execute("""UPDATE FILECPY SET ATTEMPTS = ?,
+                            LASTRANK = ? STATE = 0 WHERE ID = ? """,(attempt, 
+                                                                     workerrank, idx))
+            WARNINGS += 1
+            print ("R%i: WARNING: Error copying %s on attempt %i"
+                   " Retrying..."
+                   % (workerrank, filename,
+                      copylist[idx].attempt))
+        else:
+            print ("ERROR: Max number of copies reached on %s" \
+                   % filename)
+            Abort()
+
+    # Copy failed permenantly but non-fatally. Mark as done without bothering to retry.
+    elif status == 2:
+        # nonstandard filetype
+        statedb.execute("""UPDATE FILECPY SET STATE = ?
+        WHERE ID = ? """,(ENDSTATE, idx))
+        WARNINGS +=1 
+        print "R%i: WARNING: unable to copy %s (%s). Skipping..." \
+            % (workerrank, filename, md5sum)
+    elif status == 3:
+        # permission denied
+        statedb.execute("""UPDATE FILECPY SET STATE = ? 
+        WHERE ID = ? """,(ENDSTATE, idx))
+        WARNINGS += 1
+        print "R%i: WARNING: permission denied on %s. Skipping..." \
+            % (workerrank, filename)
+
+    elif status == 5:
+        # File does not exist. We do retry here, as we might be on
+        # a node that does not have the FS mounted.
+        if attempt < MAXTRIES:
+            attempt += 1
+            statedb.execute("""UPDATE FILECPY SET ATTEMPTS = ?,
+                            LASTRANK = ? WHERE ID = ?""", 
+                            (attempt, workerrank, idx))
+            WARNINGS += 1
+            print ("R%i: WARNING: %s does not exist on"
+                   " attempt %i. Retrying..."
+                   % (workerrank, filename, attempt))
+        else:
+            # Treat non-existance as a non-fatal error.
+            # The user might simply have moved the file during the copy
+            statedb.execute("""UPDATE FILECPY SET STATE = ?, SRCMD5 = ? 
+                            WHERE ID = ? """,(ENDSTATE, md5sum, idx))
+            WARNINGS += 1 
+            print ("R%i: WARNING %s does not exist: on"
+                   "attempt %i. Maybe someone moved the file?"
+                   " Skipping...")
+
+
 def ShutdownWorkers(starttime):
     """Tell workers we have no more work for them and collate the stats"""
-    totalwarnings = WARNINGS
     totalfiles = 0
     totalbytes = 0
     if VERBOSE:
@@ -602,8 +676,7 @@ def ShutdownWorkers(starttime):
 
     for r in range(1, workers):
         filescopied, md5done, bytescopied, byteschksummed, copytime, \
-            md5time, taskwarning = data[r]
-        totalwarnings += taskwarning
+            md5time = data[r]
         totalfiles += filescopied
         totalbytes += bytescopied
 
@@ -625,7 +698,7 @@ def ShutdownWorkers(starttime):
     print "Total data copied: %s in %i files (%s/s)" \
         % (prettyPrint(totalbytes), totalfiles,
            prettyPrint(totalbytes / totalelapsedtime))
-    print "Warnings %i" % totalwarnings
+    print "Warnings %i" % WARNINGS
 
 def createDir(sourcedir, destdir):
     """Create destdir, setting permissions and stripe attributes to be the
@@ -727,7 +800,6 @@ def copyFile (src, dst):
     """
 
     md5sum = None
-    global WARNINGS
     speed = 0
     status = 0
     stripestatus = 0   # 0 non-striped, 1 striped, -1, ignored.
@@ -775,7 +847,6 @@ def copyFile (src, dst):
                     # Can preserve the permissions
                     if error.errno == 1:
                         status = 4
-                        WARNINGS += 1
                     else:
                         raise
             else:
@@ -808,7 +879,6 @@ def copyFile (src, dst):
                 except OSError, error:
                     if error.errno == 1:
                         status = 4
-                        WARNINGS += 1
                     else:
                         raise
         return(0, 0, md5sum, 0, 0)
@@ -825,7 +895,6 @@ def copyFile (src, dst):
         filetype = "socket"
     else:
         filetype = "unknown"
-    WARNINGS += 1
     return(0, 0, filetype, 0, 2)
 
 def prettyPrint(bytes):
@@ -903,6 +972,12 @@ workers = comm.size
 # Older openMPIs are buggy
 checkVersion()
 
+# Set the final state of process
+if MD5SUM:
+    ENDSTATE = 4
+else:
+    ENDSTATE = 2
+
 try:
     if rank == 0:
         # master process
@@ -923,22 +998,25 @@ try:
                 % prettyPrint(MINSTRIPESIZE)
         if MD5SUM:
             print "Will md5 verify copies."
-
+            
         sanitycheck(sourcedir, destdir)
         checkAlive(rank, workers, timeout)
         starttime = time.time()
-        filestatelist, dirlist = scantree(sourcedir)
+        
+        statedb = createDB()
+        dirlist = scantree(sourcedir, statedb)
         if glob:
-            totalfiles = len(filestatelist)
-            filestatelist = [f for f in filestatelist if
-                             fnmatch.fnmatch(f.filename, glob)]
-            matchingfiles = len(filestatelist)
+            totalfiles = statedb.execute("SELECT COUNT(*) FROM FILECPY").fetchone()[0]
+            results = statedb.execute("DELETE FROM FILECPY WHERE NOT FILENAME GLOB ?",
+                                      (glob,))
+            matchingfiles = statedb.execute("SELECT COUNT(*) FROM FILECPY").fetchone()[0]
+
             print "Will only copy files matching %s (%i of %i)" \
                 % (glob, matchingfiles, totalfiles)
         print "Copying directories..."
         copyDirectories(sourcedir, destdir, dirlist)
         print "Copying files..."
-        DispatchWork(filestatelist)
+        DispatchWork(statedb)
         ShutdownWorkers(starttime)
         print "Master process done."
         exit(0)
@@ -951,7 +1029,11 @@ try:
 
 # We need to call MPI ABORT in our exception handler,
 # otherwise the other MPI processes spin forever.
-except Exception, err:
+#except Exception, err:
+except  (Exception, KeyboardInterrupt), err:
+    if rank == 0:
+        dumpDB(statedb, "dump.db")
+        print "Dumped stateDB"
     print err
     print traceback.print_tb(sys.exc_info()[2])
     Abort()
