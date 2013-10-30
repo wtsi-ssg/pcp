@@ -26,6 +26,7 @@ import time
 import ctypes
 import sqlite3
 import pickle
+import signal
 
 from lustre import lustreapi
 from collections import deque
@@ -134,13 +135,13 @@ def dumpDB(statedb, filename):
 def restoreDB(filename):
     filedb = sqlite3.connect(":memory:")
     filedb.text_factory = str
-    filedb.row_factory = sqlite3.Row
     dumpfile = open(filename, "rb")
     filedb.executescript(dumpfile.read())
     filedb.commit()
     dumpfile.close()
     argp = filedb.execute("SELECT ARGS FROM ARGUMENTS WHERE ID == 1").fetchone()
     args = pickle.loads(argp[0])
+
     filedb.execute("UPDATE FILECPY SET STATE = 0 WHERE STATE = 1;")
     filedb.execute("UPDATE FILECPY SET STATE = 2 WHERE STATE = 3;")
     filedb.execute("UPDATE FILECPY SET ATTEMPTS = 0;")
@@ -519,6 +520,7 @@ def DispatchWork(statedb):
     tasks fail the dispatcher will re-queue them for retries."""
 
     global WARNINGS
+    global CHECKPOINTNOW
     # Queue containing worker who are ready for work.
     idleworkers = deque()
     idleworkers.extend(range(1, workers))
@@ -529,15 +531,24 @@ def DispatchWork(statedb):
 
     # loop until we have no more work to send.
     while True:
-        
+        # See if we need to checkpoint
         if DUMPDB:
-            if cptimer.read() > DUMPINTERVAL:
-                print cptimer.read()
-                print "RO: Taking checkpoint...",
+            if cptimer.read() > DUMPINTERVAL * 60:
+                print "RO: Writing checkpoint to %s..." %DUMPDB,
                 dumpDB(statedb, DUMPDB)
                 print "Done"
                 cptimer.reset()
                 cptimer.start()
+
+        if CHECKPOINTNOW:
+            if not DUMPDB:
+                dumpfile = "pcp_checkpoint.db"
+            else:
+                dumpfile = DUMPDB
+            print "R0: SIGUSR1: Writing checkpoint to %s..." %dumpfile,
+            dumpDB(statedb, dumpfile)
+            print "Done"
+            CHECKPOINTNOW = False
 
         remains = statedb.execute \
             ("""SELECT COUNT(*) FROM FILECPY WHERE STATE <> ?""",(ENDSTATE, )).fetchone()[0]
@@ -1027,7 +1038,11 @@ class MPIargparse(argparse.ArgumentParser):
     def print_help(self, file=None):
         argparse.ArgumentParser.print_help(self, file=None)
         Abort()
-    
+
+def handler(signum, frame):
+    global CHECKPOINTNOW
+    if rank == 0 and STARTEDCOPY:
+        CHECKPOINTNOW = True
 
 # Main program
 
@@ -1035,12 +1050,19 @@ comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 workers = comm.size
 
-STARTEDCOPY = False 
+STARTEDCOPY = False  # flag to see whether we can start checkpointing.
     # Older openMPIs are buggy
 checkVersion()
-
+signal.signal(signal.SIGUSR1, handler)
 try:
     if rank == 0:
+        if workers < 2:
+            print ("ERROR: Only %i processes running. Did you invoke me via"
+                   " mpirun?") % workers
+            print ("This program requires at least 2 processes to run"
+                   " correctly.")
+            exit(0)
+
         args = parseargs()        
         timeout = args.d # dead worker timeout
         # If we are a restored job, read in our arguments
@@ -1058,6 +1080,7 @@ try:
         timeout = 0
         args = 0
 
+    # Check the workers are alive and send them the runtime arguments.
     checkAlive(rank, workers, timeout)
     args = distribArgs(args)
 
@@ -1072,6 +1095,7 @@ try:
     VERBOSE = args.v    # Should we be verbose
     DUMPDB = args.K     # Checkpoint to this directory.
     DUMPINTERVAL = args.Km # Checkpoint period
+    CHECKPOINTNOW = False
     sourcedir = args.SOURCE.rstrip(os.path.sep) # source
     destdir = args.DEST.rstrip(os.path.sep)  # destination
     glob = args.g    # only copy files matching glob
@@ -1085,20 +1109,16 @@ try:
 
     if rank == 0:
         # master process
-        if workers < 2:
-            print ("ERROR: Only %i processes running. Did you invoke me via"
-                   " mpirun?") % workers
-            print ("This program requires at least 2 processes to run"
-                   " correctly.")
-            exit(0)
-        else:
-            print "Starting %i processes." % workers
+        print "Starting %i processes." % workers
 
         if resumed:
-            print ("Resuming a copy from a checkpoint. Command line paramters"
+            print ("Resuming a copy from a checkpoint. Command line parameters"
                    " will be taken from the checkpoint file.")
-            print "SOURCE %s : DESTINATION %s" %(sourcedir, destdir)
-            
+            print "SOURCE %s" %sourcedir
+            print "DESTINATION %s" %destdir
+
+        if DUMPDB:
+            print "Will checkpoint every %i minutes to %s" %(DUMPINTERVAL, DUMPDB)
         if LSTRIPE:
             print "Will copy lustre stripe information."
         if FORCESTRIPE:
