@@ -25,6 +25,7 @@ import traceback
 import time
 import ctypes
 import sqlite3
+import pickle
 
 from lustre import lustreapi
 from collections import deque
@@ -102,7 +103,6 @@ def createDB():
 
     filedb = sqlite3.connect(":memory:")
     filedb.text_factory = str
-    filedb.row_factory = sqlite3.Row
     filedb.execute("""CREATE TABLE FILECPY(
 ID INTEGER PRIMARY KEY AUTOINCREMENT,
 FILENAME TEXT,
@@ -114,6 +114,10 @@ LASTRANK INTEGER DEFAULT 0)""")
     filedb.execute("""CREATE INDEX SIZE_IDX ON FILECPY(SIZE)""")
     filedb.execute("""CREATE INDEX STATE_IDX ON FILECPY(STATE)""")
     filedb.execute("""CREATE INDEX LAST_IDX ON FILECPY(LASTRANK)""")
+    # Table to hold program arguments
+    filedb.execute("""CREATE TABLE ARGUMENTS(
+ID INTEGER PRIMARY KEY AUTOINCREMENT,
+ARGS BLOB)""")
     return(filedb)
 
 # Dump the database out to disk
@@ -125,11 +129,25 @@ def dumpDB(statedb, filename):
 
 # Restore the database state from a previous run so we
 # can resume a copy.
-def restoreDB():
-    pass
+def restoreDB(filename):
+    filedb = sqlite3.connect(":memory:")
+    filedb.text_factory = str
+    filedb.row_factory = sqlite3.Row
+    dumpfile = open(filename, "rb")
+    filedb.executescript(dumpfile.read())
+    filedb.commit()
+    dumpfile.close()
+    argp = filedb.execute("SELECT ARGS FROM ARGUMENTS WHERE ID == 1").fetchone()
+    args = pickle.loads(argp[0])
+    filedb.execute("UPDATE FILECPY SET STATE = 0 WHERE STATE = 1;")
+    filedb.execute("UPDATE FILECPY SET STATE = 2 WHERE STATE = 3;")
+    filedb.execute("UPDATE FILECPY SET ATTEMPTS = 0;")
+    filedb.execute("UPDATE FILECPY SET LASTRANK = 0;")
+    return(filedb, args)
+    
 
 def parseargs():
-    parser = argparse.ArgumentParser(description=
+    parser = MPIargparse(description=
                                      "Copy a directory tree in parallel",
                                      formatter_class =
                                      argparse.RawDescriptionHelpFormatter,
@@ -151,8 +169,10 @@ machines as possible to prevent local network bottlenecks.
 
 """)
 
-    parser.add_argument("SOURCE", help="source directory")
-    parser.add_argument("DEST", help="destination directory")
+
+    parser.add_argument("SOURCE", help="source directory", nargs="?")
+    parser.add_argument("DEST", help="destination directory", nargs="?")
+
     parser.add_argument("-c", help="verify copy with checksum", default=False,
                         action="store_true")
     parser.add_argument("-d", help="dead worker timeout (seconds)", default=10,
@@ -183,21 +203,48 @@ machines as possible to prevent local network bottlenecks.
                         help=("do not stripe files smaller than B "
                               "bytes. Implies -l. Size can be suffixed"
                               "with k,M,G,T,P"), metavar="B", default=0)
+    parser.add_argument("-R",
+                        help=("Restart a copy from a checkpoint file DUMPFILE."),
+                        type=str, metavar="DUMPFILE", default=None)
+
+    parser.add_argument("-K",
+                       help=("Enable checkpointing to file DUMPFILE"),
+                       type=str, metavar="DUMPFILE", default=None)
 
     if len(sys.argv) == 1:
         parser.print_help()
-        sys.exit(1)
+        Abort()
+        
     args = parser.parse_args()
+
+    if not args.SOURCE and  not args.R:
+        print "You must specify a source directory!"
+        parser.print_help()
+        Abort()
+
+    if not args.DEST and  not args.R:
+        print "You must specify a destination directory!"
+        parser.print_help()
+        Abort()
 
     if args.ls != 0:
         args.l = True
         args.ls = SIConvert(args.ls)
         if args.ls == -1:
             print "Error: incorrect size specification."
-            exit(1)
+            Abort()
     return(args)
 
 def Abort():
+    if rank == 0 and STARTEDCOPY and DUMPDB:
+        try:
+            print "Attempting write state database to %s..." %(DUMPDB),
+            dumpDB(statedb, DUMPDB)
+            print "Done."
+        except IOError as dberr:
+            print "FAILED!" 
+            print dberr
+
     """Clean down all the MPI Processes."""
     MPI.COMM_WORLD.Abort(1)
     exit (1)
@@ -325,6 +372,8 @@ def md5copy(src, dst, blksize, MD5SUM):
     infile.close()
     outfile.close()
     digest = md5hash.hexdigest()
+    if not MD5SUM:
+        digest = None
     return(digest)
 
 def calcmd5(filename):
@@ -503,8 +552,8 @@ def DispatchWork(statedb):
             task = statedb.execute("""SELECT * FROM FILECPY WHERE STATE == 0 AND
                                   LASTRANK <> ? LIMIT 1""",(lastrank, )).fetchone()
             if task:
-                statedb.execute("""UPDATE FILECPY SET STATE = 1 WHERE ID = ?""",(task["ID"],))
-                comm.send(("COPY", task["FILENAME"], task["ID"]),
+                statedb.execute("""UPDATE FILECPY SET STATE = 1 WHERE ID = ?""",(task[0],))
+                comm.send(("COPY", task[1], task[0]),
                           dest=worker, tag=1)
                 continue
 
@@ -512,8 +561,8 @@ def DispatchWork(statedb):
                 task = statedb.execute("""SELECT * FROM FILECPY WHERE STATE == 2 AND
                        LASTRANK <> ? ORDER BY SIZE DESC LIMIT 1""",(lastrank, )).fetchone()
                 if task:
-                    statedb.execute("""UPDATE FILECPY SET STATE = 3 WHERE ID = ?""",(task["ID"],))
-                    comm.send(("MD5", task["FILENAME"], task["ID"]),
+                    statedb.execute("""UPDATE FILECPY SET STATE = 3 WHERE ID = ?""",(task[0],))
+                    comm.send(("MD5", task[1], task[0]),
                               dest=worker, tag=1)
                     continue
             # There is work, but not for this worker. Send to the back of the queue
@@ -944,41 +993,77 @@ def checkVersion():
         print "instead."
     return()
 
+def distribArgs(args):
+    """If we have been restarted from a checkpoint we need to 
+    pass the original command line arguments to all of the workers."""
+    args = comm.bcast(args, root=0)
+    return(args)
+
+class MPIargparse(argparse.ArgumentParser):
+    """Subclass argparse so we can add a call to Abort, to tidy up MPI bits and pieces."""
+    def error(self,message):
+        self.print_usage(sys.stderr)
+        Abort()
+
+    def print_help(self, file=None):
+        argparse.ArgumentParser.print_help(self, file=None)
+        Abort()
+    
+
 # Main program
 
-args = parseargs()
-MD5SUM = args.c      # checksum copy
-DRYRUN = args.dry_run  # Dry run
-MAXTRIES = args.t      # number of retries on IO error
-PRESERVE = args.p      # preserve permissions etc
-LSTRIPE = args.l       # preserve lustre information
-MINSTRIPESIZE = args.ls  # don't stripe for files smaller than this
-FORCESTRIPE = args.lf   # Stripe all files regardless of source striping
-
-WARNINGS = 0 # number of warning
-VERBOSE = args.v    # Should we be verbose
-sourcedir = args.SOURCE.rstrip(os.path.sep) # source
-destdir = args.DEST.rstrip(os.path.sep)  # destination
-timeout = args.d # dead worker timeout
-glob = args.g    # only copy files matching glob
-filestatelist = [] # list of files to copy
-dirlist = []  # list of directories to copy
-
-# Init MPI
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 workers = comm.size
 
-# Older openMPIs are buggy
+STARTEDCOPY = False 
+    # Older openMPIs are buggy
 checkVersion()
 
-# Set the final state of process
-if MD5SUM:
-    ENDSTATE = 4
-else:
-    ENDSTATE = 2
-
 try:
+    if rank == 0:
+        args = parseargs()        
+        timeout = args.d # dead worker timeout
+        # If we are a restored job, read in our arguments
+        # from the restoredb instead.
+        if args.R:
+            statedb, args = restoreDB(args.R)
+            resumed = True
+        else:
+            resumed = False
+            statedb = createDB()
+            pargs = pickle.dumps(args)
+            statedb.execute("""INSERT OR REPLACE INTO ARGUMENTS (ARGS, ID)
+                    VALUES(?,1)""", (pargs,))
+    else:
+        timeout = 0
+        args = 0
+
+    checkAlive(rank, workers, timeout)
+    args = distribArgs(args)
+
+    MD5SUM = args.c      # checksum copy
+    DRYRUN = args.dry_run  # Dry run
+    MAXTRIES = args.t      # number of retries on IO error
+    PRESERVE = args.p      # preserve permissions etc
+    LSTRIPE = args.l       # preserve lustre information
+    MINSTRIPESIZE = args.ls  # don't stripe for files smaller than this
+    FORCESTRIPE = args.lf   # Stripe all files regardless of source striping
+    WARNINGS = 0 # number of warning
+    VERBOSE = args.v    # Should we be verbose
+    DUMPDB = args.K     # Checkpoint to this directory.
+
+    sourcedir = args.SOURCE.rstrip(os.path.sep) # source
+    destdir = args.DEST.rstrip(os.path.sep)  # destination
+    glob = args.g    # only copy files matching glob
+
+
+    # Set the final state of process
+    if MD5SUM:
+        ENDSTATE = 4
+    else:
+        ENDSTATE = 2
+
     if rank == 0:
         # master process
         if workers < 2:
@@ -989,6 +1074,12 @@ try:
             exit(0)
         else:
             print "Starting %i processes." % workers
+
+        if resumed:
+            print ("Resuming a copy from a checkpoint. Command line paramters"
+                   " will be taken from the checkpoint file.")
+            print "SOURCE %s : DESTINATION %s" %(sourcedir, destdir)
+            
         if LSTRIPE:
             print "Will copy lustre stripe information."
         if FORCESTRIPE:
@@ -998,23 +1089,24 @@ try:
                 % prettyPrint(MINSTRIPESIZE)
         if MD5SUM:
             print "Will md5 verify copies."
-            
-        sanitycheck(sourcedir, destdir)
-        checkAlive(rank, workers, timeout)
-        starttime = time.time()
-        
-        statedb = createDB()
-        dirlist = scantree(sourcedir, statedb)
-        if glob:
-            totalfiles = statedb.execute("SELECT COUNT(*) FROM FILECPY").fetchone()[0]
-            results = statedb.execute("DELETE FROM FILECPY WHERE NOT FILENAME GLOB ?",
-                                      (glob,))
-            matchingfiles = statedb.execute("SELECT COUNT(*) FROM FILECPY").fetchone()[0]
 
-            print "Will only copy files matching %s (%i of %i)" \
-                % (glob, matchingfiles, totalfiles)
-        print "Copying directories..."
-        copyDirectories(sourcedir, destdir, dirlist)
+        sanitycheck(sourcedir, destdir)
+        starttime = time.time()
+
+        if not resumed:
+            dirlist = scantree(sourcedir, statedb)
+            if glob:
+                totalfiles = statedb.execute("SELECT COUNT(*) FROM FILECPY").fetchone()[0]
+                results = statedb.execute("DELETE FROM FILECPY WHERE NOT FILENAME GLOB ?",
+                                          (glob,))
+                matchingfiles = statedb.execute("SELECT COUNT(*) FROM FILECPY").fetchone()[0]
+
+                print "Will only copy files matching %s (%i of %i)" \
+                    % (glob, matchingfiles, totalfiles)
+            print "Copying directories..."
+            copyDirectories(sourcedir, destdir, dirlist)
+
+        STARTEDCOPY = True
         print "Copying files..."
         DispatchWork(statedb)
         ShutdownWorkers(starttime)
@@ -1023,7 +1115,6 @@ try:
 
     else:
         # file copy workers
-        checkAlive(rank, workers, timeout)
         ConsumeWork(sourcedir, destdir)
         exit(0)
 
@@ -1031,9 +1122,6 @@ try:
 # otherwise the other MPI processes spin forever.
 #except Exception, err:
 except  (Exception, KeyboardInterrupt), err:
-    if rank == 0:
-        dumpDB(statedb, "dump.db")
-        print "Dumped stateDB"
     print err
     print traceback.print_tb(sys.exc_info()[2])
     Abort()
