@@ -1089,6 +1089,12 @@ checkVersion()
 signal.signal(signal.SIGUSR1, handler)
 try:
     if rank == 0:
+
+        args = parseargs()        
+        timeout = args.d # dead worker timeout
+        # If we are a restored job, read in our arguments
+        # from the restoredb instead.
+        
         if workers < 2:
             print ("ERROR: Only %i processes running. Did you invoke me via"
                    " mpirun?") % workers
@@ -1096,10 +1102,6 @@ try:
                    " correctly.")
             exit(0)
 
-        args = parseargs()        
-        timeout = args.d # dead worker timeout
-        # If we are a restored job, read in our arguments
-        # from the restoredb instead.
         if args.R:
             statedb, args = restoreDB(args.R)
             resumed = True
