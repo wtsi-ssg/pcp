@@ -92,6 +92,29 @@ even if the original is striped.
 If -lf is set, pcp will stripe all files at the destination. This options can
 be combined with -ls to force striping of files over a certain size.
 
+Checkpointing
+-------------
+
+pcp support serveral checkpointing methods. The checkpoint allows a copy,
+interrupted for any reason, to be restarted. Files which were in the process of
+being copied will be recopied in their entirey.
+
+If you specify a dumpfile with -K, a checkpoint will be written every 60 minutes.
+The checkpoint period can be varied with the -Km option. If the program runs into
+an exception, it will also write out a checkpoint before it exits.
+
+Alternatively, pcp can be made to generate a checkpoint by sending it SIGUSR1.
+If no dumpfile has been specified with -K, it will default to writing out to
+"pcp_checkpoint.db" in the program's current working directory.
+
+To resume from checkpoint, start pcp with the -R <dumpfile> option. All pcp command
+line parameters will be taken from the dumpfile; any other command line arguments you
+give to pcp will be ignored.
+
+Note that you can safely resume a checkpoint with a different number of processes than
+the original.
+
+
 Other Useful Options
 --------------------
 
