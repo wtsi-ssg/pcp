@@ -27,6 +27,7 @@ import ctypes
 import sqlite3
 import pickle
 import signal
+import gzip
 
 from lustre import lustreapi
 from collections import deque
@@ -124,7 +125,7 @@ ARGS BLOB)""")
 # Dump the database out to disk
 def dumpDB(statedb, filename):
     tmpfile = filename+"__PARTIAL__"
-    dbfile = open(tmpfile, "wb")
+    dbfile = gzip.open(tmpfile, "wb")
     for l in statedb.iterdump():
         dbfile.write(l + "\n")
     dbfile.close()
@@ -135,7 +136,7 @@ def dumpDB(statedb, filename):
 def restoreDB(filename):
     filedb = sqlite3.connect(":memory:")
     filedb.text_factory = str
-    dumpfile = open(filename, "rb")
+    dumpfile = gzip.open(filename, "rb")
     filedb.executescript(dumpfile.read())
     filedb.commit()
     dumpfile.close()
