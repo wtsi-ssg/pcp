@@ -1050,6 +1050,7 @@ def handler(signum, frame):
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 workers = comm.size
+hostname = os.uname()[1]
 
 STARTEDCOPY = False  # flag to see whether we can start checkpointing.
     # Older openMPIs are buggy
@@ -1164,6 +1165,7 @@ try:
 # otherwise the other MPI processes spin forever.
 #except Exception, err:
 except  (Exception, KeyboardInterrupt), err:
+    print "Exception on rank %i host %s:" %(rank, hostname)
     print err
     print traceback.print_tb(sys.exc_info()[2])
     Abort()
