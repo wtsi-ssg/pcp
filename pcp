@@ -530,8 +530,17 @@ def DispatchWork(statedb):
         cptimer = Timer()
         cptimer.start()
 
+    copyremains = statedb.execute \
+        ("""SELECT COUNT(*) FROM FILECPY WHERE STATE == 0""").fetchone()[0]
+        
+    md5remains = statedb.execute \
+        ("""SELECT COUNT(*) FROM FILECPY WHERE STATE < ?""",(ENDSTATE,)).fetchone()[0]
+
+    if not MD5SUM:
+        md5remains = 0
+
     # loop until we have no more work to send.
-    while True:
+    while copyremains > 0 or md5remains > 0:
         # See if we need to checkpoint
         if DUMPDB:
             if cptimer.read() > DUMPINTERVAL * 60:
@@ -551,10 +560,6 @@ def DispatchWork(statedb):
             print "Done"
             CHECKPOINTNOW = False
 
-        remains = statedb.execute \
-            ("""SELECT COUNT(*) FROM FILECPY WHERE STATE <> ?""",(ENDSTATE, )).fetchone()[0]
-        if remains == 0:
-            break
 
         # Listen for workers reporting in and deal with the results
         if comm.Iprobe(source=MPI.ANY_SOURCE, tag=1):
@@ -563,11 +568,11 @@ def DispatchWork(statedb):
             idleworkers.appendleft(workerrank)
 
             if action == "COPYRESULT":
-                processCopy(statedb, md5sum, idx, workerrank, status, size, speed,
-                            stripestatus)
+                copyremains = processCopy(statedb, md5sum, idx, workerrank, status, size, speed,
+                            stripestatus, copyremains)
 
             if action == "MD5RESULT":
-                processMD5(statedb, md5sum, idx, workerrank, status)
+                md5remains = processMD5(statedb, md5sum, idx, workerrank, status, md5remains)
 
         # try for dispatch
         if len(idleworkers) > 0:
@@ -590,7 +595,7 @@ def DispatchWork(statedb):
 
             if MD5SUM:
                 task = statedb.execute("""SELECT * FROM FILECPY WHERE STATE == 2 AND
-                       LASTRANK <> ? ORDER BY SIZE DESC LIMIT 1""",(lastrank, )).fetchone()
+                       LASTRANK <> ? LIMIT 1""",(lastrank, )).fetchone()
                 if task:
                     statedb.execute("""UPDATE FILECPY SET STATE = 3 WHERE ID = ?""",(task[0],))
                     comm.send(("MD5", task[1], task[0]),
@@ -602,7 +607,7 @@ def DispatchWork(statedb):
     if VERBOSE:
         print "R0: No more work to do."
 
-def processMD5(statedb, md5sum, idx, workerrank, status):
+def processMD5(statedb, md5sum, idx, workerrank, status, md5remains):
     global WARNINGS
     filename, attempt, srcmd5 = statedb.execute("""SELECT FILENAME, ATTEMPTS, SRCMD5
     FROM FILECPY WHERE ID = ?""",(idx,)).fetchone()
@@ -610,6 +615,7 @@ def processMD5(statedb, md5sum, idx, workerrank, status):
         if srcmd5 == md5sum:
             statedb.execute("""UPDATE FILECPY SET STATE = 4
                             WHERE ID = ?""", (idx,))
+            md5remains -= 1
             if VERBOSE:
                 print "R%i: %s md5sum verified (%s)" \
                     % (workerrank, filename, md5sum)
@@ -643,9 +649,9 @@ def processMD5(statedb, md5sum, idx, workerrank, status):
         else:
             print "ERROR: Max number of md5s reached on %s." % filename
             Abort()
+    return(md5remains)
 
-
-def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripestatus):
+def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripestatus, copyremains):
     global WARNINGS
     filename, attempt = statedb.execute("""SELECT FILENAME, ATTEMPTS FROM FILECPY 
                         WHERE ID = ?""",(idx, )).fetchone()
@@ -654,7 +660,7 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
     if status == 0 or status == 4:
         statedb.execute("""UPDATE FILECPY SET STATE = 2, SRCMD5 = ?, LASTRANK = ?,
                         SIZE = ? WHERE ID = ? """,(md5sum, workerrank, size, idx))
-
+        copyremains -= 1
         if VERBOSE:
             stripetxt = ""
             if LSTRIPE or FORCESTRIPE:
@@ -696,6 +702,7 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
         # nonstandard filetype
         statedb.execute("""UPDATE FILECPY SET STATE = ?
         WHERE ID = ? """,(ENDSTATE, idx))
+        copyremains -= 1
         WARNINGS +=1 
         print "R%i: WARNING: unable to copy %s (%s). Skipping..." \
             % (workerrank, filename, md5sum)
@@ -703,6 +710,7 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
         # permission denied
         statedb.execute("""UPDATE FILECPY SET STATE = ? 
         WHERE ID = ? """,(ENDSTATE, idx))
+        copyremains -= 1
         WARNINGS += 1
         print "R%i: WARNING: permission denied on %s. Skipping..." \
             % (workerrank, filename)
@@ -724,11 +732,12 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
             # The user might simply have moved the file during the copy
             statedb.execute("""UPDATE FILECPY SET STATE = ?, SRCMD5 = ? 
                             WHERE ID = ? """,(ENDSTATE, md5sum, idx))
+            copyremains -= 1
             WARNINGS += 1 
             print ("R%i: WARNING %s does not exist: on"
                    "attempt %i. Maybe someone moved the file?"
                    " Skipping...")
-
+    return(copyremains)
 
 def ShutdownWorkers(starttime):
     """Tell workers we have no more work for them and collate the stats"""
