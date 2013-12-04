@@ -685,7 +685,7 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
         if attempt < MAXTRIES:
             attempt += 1
             statedb.execute("""UPDATE FILECPY SET ATTEMPTS = ?,
-                            LASTRANK = ? STATE = 0 WHERE ID = ? """,(attempt, 
+                            LASTRANK = ?, STATE = 0 WHERE ID = ? """,(attempt, 
                                                                      workerrank, idx))
             WARNINGS += 1
             print ("R%i: WARNING: Error copying %s on attempt %i"
