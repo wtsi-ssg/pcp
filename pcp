@@ -575,11 +575,12 @@ def DispatchWork(statedb):
             idleworkers.appendleft(workerrank)
 
             if action == "COPYRESULT":
-                copyremains = processCopy(statedb, md5sum, idx, workerrank, status, size, speed,
-                            stripestatus, copyremains)
+                copyremains, md5remains  = processCopy(statedb, md5sum, idx, workerrank, status, size, speed,
+                            stripestatus, copyremains, md5remains)
 
             if action == "MD5RESULT":
-                md5remains = processMD5(statedb, md5sum, idx, workerrank, status, md5remains)
+                copyremains, md5remains = processMD5(statedb, md5sum, idx, workerrank, status, 
+                                                     copyremains, md5remains)
 
         # try for dispatch
         if len(idleworkers) > 0:
@@ -614,7 +615,7 @@ def DispatchWork(statedb):
     if VERBOSE:
         print "R0: No more work to do."
 
-def processMD5(statedb, md5sum, idx, workerrank, status, md5remains):
+def processMD5(statedb, md5sum, idx, workerrank, status, copyremains, md5remains):
     global WARNINGS
     filename, attempt, srcmd5 = statedb.execute("""SELECT FILENAME, ATTEMPTS, SRCMD5
     FROM FILECPY WHERE ID = ?""",(idx,)).fetchone()
@@ -632,6 +633,7 @@ def processMD5(statedb, md5sum, idx, workerrank, status, md5remains):
             attempt += 1 
             statedb.execute("""UPDATE FILECPY SET STATE = 0, SRCMD5 = NULL, ATTEMPTS = ?,
                             LASTRANK = ? WHERE ID =?""",(attempt, workerrank, idx))
+            copyremains += 1
             if attempt < MAXTRIES:
                 WARNINGS +=1 
                 print ("R%i: %s WARNING: SILENT DATA CORRUPTION %s"
@@ -652,19 +654,19 @@ def processMD5(statedb, md5sum, idx, workerrank, status, md5remains):
         attempt += 1
         statedb.execute("""UPDATE FILECPY SET ATTEMPTS = ?, LASTRANK = ?, STATE = 2
                         WHERE ID =?""",(attempt, workerrank, idx))
-
         if attempt < MAXTRIES:
             WARNINGS += 1
             print ("R%i: %s WARNING: Error calculating destination"
-                   " md5sum of %s. Re-attempting md5"
-                   % (workerrank, timestamp(), filename, attempt))
+                   " md5sum of %s on attempt %i. Re-trying..." \
+                       %(workerrank, timestamp(), filename, attempt))
         else:
-            print "%s ERROR: Max number of md5s reached on %s." \
-                %(timestamp(), filename)
+            # Retries exceeded.
+            print ("R%i %s ERROR: Max number of md5 attempts reached on %s."
+                   %(timestamp(), filename))
             Abort()
-    return(md5remains)
+    return(copyremains, md5remains)
 
-def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripestatus, copyremains):
+def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripestatus, copyremains, md5remains):
     global WARNINGS
     filename, attempt = statedb.execute("""SELECT FILENAME, ATTEMPTS FROM FILECPY 
                         WHERE ID = ?""",(idx, )).fetchone()
@@ -688,7 +690,7 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
                   % (workerrank, timestamp(), filename, stripetxt,
                      prettyPrint(size), prettyPrint(speed))
             if status == 4:
-                # unabel to preserve permissions
+                # unable to preserve permissions
                 WARNINGS += 1
                 print ("R%i: %s WARNING: unable to preserve"
                        " attributes on %s") \
@@ -704,7 +706,7 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
             print ("R%i: %s WARNING: Error copying %s on attempt %i"
                    " Retrying..."
                    % (workerrank, timestamp(), filename,
-                      copylist[idx].attempt))
+                      attempt))
         else:
             print "%s ERROR: Max number of copies reached on %s" \
                 %(timestamp(), filename)
@@ -716,6 +718,7 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
         statedb.execute("""UPDATE FILECPY SET STATE = ?
         WHERE ID = ? """,(ENDSTATE, idx))
         copyremains -= 1
+        md5remains -= 1
         WARNINGS +=1 
         print "R%i: %s WARNING: unable to copy %s (%s). Skipping..." \
             % (workerrank, timestamp(), filename, md5sum)
@@ -724,6 +727,7 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
         statedb.execute("""UPDATE FILECPY SET STATE = ? 
         WHERE ID = ? """,(ENDSTATE, idx))
         copyremains -= 1
+        md5remains -= 1
         WARNINGS += 1
         print "R%i: %s WARNING: permission denied on %s. Skipping..." \
             % (workerrank, timestamp(), filename)
@@ -746,11 +750,12 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
             statedb.execute("""UPDATE FILECPY SET STATE = ?, SRCMD5 = ? 
                             WHERE ID = ? """,(ENDSTATE, md5sum, idx))
             copyremains -= 1
+            md5remains -= 1
             WARNINGS += 1 
             print ("R%i: WARNING %s does not exist: on"
                    "attempt %i. Maybe someone moved the file?"
                    " Skipping...")
-    return(copyremains)
+    return(copyremains, md5remains)
 
 def ShutdownWorkers(starttime):
     """Tell workers we have no more work for them and collate the stats"""
