@@ -12,8 +12,8 @@ which do the copy."""
 # Author Guy Coates <gmpc@sanger.ac.uk>
 # This program is released under GNU Public License V2 (GPLv2)
 
-import rpdb2
-rpdb2.start_embedded_debugger("XXX", fAllowRemote=True, timeout=10)
+#import rpdb2
+#rpdb2.start_embedded_debugger("XXX", fAllowRemote=True, timeout=10)
 
 import argparse
 import hashlib
