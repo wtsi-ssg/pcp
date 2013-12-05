@@ -102,6 +102,10 @@ class Timer:
         else:
             return self.elapsedtime
 
+def timestamp():
+    return time.strftime("%b %d %H:%M:%S")
+
+
 def createDB():
 # This database holds all the information about files to be copied,
 # their checksums as well as the state of the copy.
@@ -336,7 +340,9 @@ def scantree(sourcedir, statedb):
     totalfiles = statedb.execute("SELECT COUNT(*) FROM FILECPY").fetchone()[0]
     totaldirs = len(dirlist)
     rate = (totalfiles + totaldirs) / walltime
-    print ("R%i: Scan Done. Did %i files, %i dirs in %i seconds"
+    walltime = time.strftime("%H hrs %M mins %S secs",
+                             time.gmtime(walltime))
+    print ("R%i: Scan Done. Did %i files, %i dirs in %s"
            " (%.0f items/sec)."
         % (rank, totalfiles, totaldirs, walltime, rate))
     return(dirlist)
@@ -650,8 +656,8 @@ def processMD5(statedb, md5sum, idx, workerrank, status, md5remains):
                             WHERE ID = ?""", (idx,))
             md5remains -= 1
             if VERBOSE:
-                print "R%i: %s md5sum verified (%s)" \
-                    % (workerrank, filename, md5sum)
+                print "R%i: %s %s md5sum verified (%s)" \
+                    % (workerrank, timestamp(), filename, md5sum)
         else:
             # This is bad; we got a md5 mismatch, but no IO
             # exceptions were thrown.
@@ -660,17 +666,17 @@ def processMD5(statedb, md5sum, idx, workerrank, status, md5remains):
                             LASTRANK = ? WHERE ID =?""",(attempt, workerrank, idx))
             if attempt < MAXTRIES:
                 WARNINGS +=1 
-                print ("R%i: WARNING: SILENT DATA CORRUPTION %s"
+                print ("R%i: %s WARNING: SILENT DATA CORRUPTION %s"
                        " md5sum  mismatch (%s:%s). Re-queuing copy %i."
-                       % (workerrank, filename, srcmd5, md5sum, attempt))
+                       % (workerrank, timestamp(), filename, srcmd5, md5sum, attempt))
                 destfile = mungePath(sourcedir, destdir, filename)
                 corruptfile = destfile+"_CORRUPTED_%i" %attempt
-                print ("R%i: Renaming corrupt file as %s for later analysis." 
-                       % (workerrank, corruptfile))
+                print ("R%i: %s Renaming corrupt file as %s for later analysis." 
+                       % (workerrank, timestamp(), corruptfile))
                 os.rename (destfile, corruptfile)
             else:
-                print "ERROR: Max number of copies reached on %s."\
-                    % filename
+                print "%s ERROR: Max number of copies reached on %s."\
+                    %(timestamp(), filename)
                 Abort()
 
     else:
@@ -681,11 +687,12 @@ def processMD5(statedb, md5sum, idx, workerrank, status, md5remains):
 
         if attempt < MAXTRIES:
             WARNINGS += 1
-            print ("R%i: WARNING: Error calculating destination"
+            print ("R%i: %s WARNING: Error calculating destination"
                    " md5sum of %s. Re-attempting md5"
-                   % (workerrank, filename, attempt))
+                   % (workerrank, timestamp(), filename, attempt))
         else:
-            print "ERROR: Max number of md5s reached on %s." % filename
+            print "%s ERROR: Max number of md5s reached on %s." \
+                %(timestamp(), filename)
             Abort()
     return(md5remains)
 
@@ -709,15 +716,15 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
                 elif stripestatus == -1:
                     stripetxt = "(small file: ignored striping)"
 
-            print "R%i: copied %s %s %s (%s/s)" \
-                  % (workerrank, filename, stripetxt,
+            print "R%i: %s copied %s %s %s (%s/s)" \
+                  % (workerrank, timestamp(), filename, stripetxt,
                      prettyPrint(size), prettyPrint(speed))
             if status == 4:
                 # unabel to preserve permissions
                 WARNINGS += 1
-                print ("R%i: WARNING: unable to preserve"
+                print ("R%i: %s WARNING: unable to preserve"
                        " attributes on %s") \
-                       % (workerrank, filename)                       
+                       % (workerrank, timestamp(), filename)
     # copy failed.
     elif status ==1:
         if attempt < MAXTRIES:
@@ -726,13 +733,13 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
                             LASTRANK = ?, STATE = 0 WHERE ID = ? """,(attempt, 
                                                                      workerrank, idx))
             WARNINGS += 1
-            print ("R%i: WARNING: Error copying %s on attempt %i"
+            print ("R%i: %s WARNING: Error copying %s on attempt %i"
                    " Retrying..."
-                   % (workerrank, filename,
+                   % (workerrank, timestamp(), filename,
                       copylist[idx].attempt))
         else:
-            print ("ERROR: Max number of copies reached on %s" \
-                   % filename)
+            print "%s ERROR: Max number of copies reached on %s" \
+                %(timestamp(), filename)
             Abort()
 
     # Copy failed permenantly but non-fatally. Mark as done without bothering to retry.
@@ -742,16 +749,16 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
         WHERE ID = ? """,(ENDSTATE, idx))
         copyremains -= 1
         WARNINGS +=1 
-        print "R%i: WARNING: unable to copy %s (%s). Skipping..." \
-            % (workerrank, filename, md5sum)
+        print "R%i: %s WARNING: unable to copy %s (%s). Skipping..." \
+            % (workerrank, timestamp(), filename, md5sum)
     elif status == 3:
         # permission denied
         statedb.execute("""UPDATE FILECPY SET STATE = ? 
         WHERE ID = ? """,(ENDSTATE, idx))
         copyremains -= 1
         WARNINGS += 1
-        print "R%i: WARNING: permission denied on %s. Skipping..." \
-            % (workerrank, filename)
+        print "R%i: %s WARNING: permission denied on %s. Skipping..." \
+            % (workerrank, timestamp(), filename)
 
     elif status == 5:
         # File does not exist. We do retry here, as we might be on
@@ -762,9 +769,9 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
                             LASTRANK = ? WHERE ID = ?""", 
                             (attempt, workerrank, idx))
             WARNINGS += 1
-            print ("R%i: WARNING: %s does not exist on"
+            print ("R%i: %s WARNING: %s does not exist on"
                    " attempt %i. Retrying..."
-                   % (workerrank, filename, attempt))
+                   % (workerrank, timestamp(), filename, attempt))
         else:
             # Treat non-existance as a non-fatal error.
             # The user might simply have moved the file during the copy
@@ -822,9 +829,12 @@ def ShutdownWorkers(starttime):
                 % (r, prettyPrint(byteschksummed), md5done,
                    prettyPrint(byteschksummed / md5time))
 
-    print "Total data copied: %s in %i files (%s/s)" \
-        % (prettyPrint(totalbytes), totalfiles,
-           prettyPrint(totalbytes / totalelapsedtime))
+    print ("Total data copied: %s in %i files (%s/s)" 
+           %(prettyPrint(totalbytes), totalfiles,
+             prettyPrint(totalbytes / totalelapsedtime)))
+    print ("Total Time for copy: %s" 
+           %time.strftime("%H hrs %M mins %S secs", 
+                          time.gmtime(totalelapsedtime)))
     print "Warnings %i" % WARNINGS
 
 def createDir(sourcedir, destdir):
@@ -879,22 +889,23 @@ def attemptCreateDir(sourcedir, destdir):
     global WARNINGS
     if DRYRUN:
         if VERBOSE:
-            print "R%i mkdir %s" % (rank, destdir)
+            print "R%i: %s mkdir %s" % (rank, timestamp(), destdir)
     else:
         i = 0
         while i < MAXTRIES:
             if VERBOSE:
-                print "R%i mkdir %s" % (rank, destdir)
+                print "R%i: %s mkdir %s" % (rank, timestamp(), destdir)
             try:
                 createDir(sourcedir, destdir)
                 break
             except IOError, error:
                 i += 1
-                print "WARNING: mkdir error on %s attempt %i" % (destdir, i)
+                print "R%i %s WARNING: mkdir error on %s attempt %i" \
+                    % (rank, timestamp(), destdir, i)
                 WARNINGS += 1
                 if i == MAXTRIES:
-                    print "ERROR: Max number of retries on %s exceeded" \
-                        % sourcedir
+                    print "R%i %s ERROR: Max number of retries on %s exceeded" \
+                        % (rank, timestamp(), sourcedir)
                     raise
     return
 
