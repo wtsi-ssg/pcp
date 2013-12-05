@@ -12,6 +12,7 @@ which do the copy."""
 # Author Guy Coates <gmpc@sanger.ac.uk>
 # This program is released under GNU Public License V2 (GPLv2)
 
+
 #import rpdb2
 #rpdb2.start_embedded_debugger(XXXX, fAllowRemote=True,timeout=1)
 
@@ -630,6 +631,11 @@ def processMD5(statedb, md5sum, idx, workerrank, status, md5remains):
                 print ("R%i: WARNING: SILENT DATA CORRUPTION %s"
                        " md5sum  mismatch (%s:%s). Re-queuing copy %i."
                        % (workerrank, filename, srcmd5, md5sum, attempt))
+                destfile = mungePath(sourcedir, destdir, filename)
+                corruptfile = destfile+"_CORRUPTED_%i" %attempt
+                print ("R%i: Renaming corrupt file as %s for later analysis." 
+                       % (workerrank, corruptfile))
+                os.rename (destfile, corruptfile)
             else:
                 print "ERROR: Max number of copies reached on %s."\
                     % filename
