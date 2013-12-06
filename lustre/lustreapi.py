@@ -23,7 +23,11 @@ import os
 import shutil
 
 import pkg_resources
-__version__ = pkg_resources.require("pcp")[0].version
+try:
+    __version__ = pkg_resources.require("pcp")[0].version
+except pkg_resources.DistributionNotFound:
+    __version__ = "UNRELEASED"
+
 
 
 liblocation = ctypes.util.find_library("lustreapi")
