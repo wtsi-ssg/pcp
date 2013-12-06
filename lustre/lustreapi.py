@@ -29,7 +29,6 @@ except pkg_resources.DistributionNotFound:
     __version__ = "UNRELEASED"
 
 
-
 liblocation = ctypes.util.find_library("lustreapi")
 # See if liblustreapi.so is in the same directory as the module
 if not liblocation:

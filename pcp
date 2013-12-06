@@ -34,24 +34,11 @@ from lustre import lustreapi
 from collections import deque
 from mpi4py import MPI
 import pkg_resources
-<<<<<<< HEAD
 
-__version__ = pkg_resources.require("pcp")[0].version
-=======
 try:
     __version__ = pkg_resources.require("pcp")[0].version
 except pkg_resources.DistributionNotFound:
     __version__ = "UNRELEASED"
-
-try:
-    from mpi4py import MPI
-except ImportError:
-    print"""
-ERROR: Your environment needs to be configured for MPI.
-http://mediawiki.internal.sanger.ac.uk/wiki/index.php/How_to_run_MPI_jobs_on_the_farm
-"""
-    raise
->>>>>>> 4d21b18... Set version number to UNRELEASED if we are running outside of the build
 
 # Ctypes boilerplate for readdir/opendir/closedir
 clib = ctypes.CDLL("libc.so.6", use_errno=True)
