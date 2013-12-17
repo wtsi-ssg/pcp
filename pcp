@@ -176,6 +176,10 @@ This program traverses a directory tree and copies files in the tree in
 parallel. It does not copy individual files in parallel. It should be invoked
 via mpirun.
 
+Detailed information can be found here:
+
+http://mediawiki.internal.sanger.ac.uk/wiki/index.php/Parallel_file_copies
+
 If run with the -l flag or -lf flags pcp will be stripe aware. -l will cause
 stripe information to be copied from the source files and directories. -lf will 
 cause all files and directories on the destination to be striped, regardless of
