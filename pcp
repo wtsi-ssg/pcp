@@ -171,7 +171,7 @@ via mpirun.
 
 If run with the -l flag or -lf flags pcp will be stripe aware. -l will cause
 stripe information to be copied from the source files and directories. -lf will 
-set all files and directories on the destination to be striped, regardless of
+cause all files and directories on the destination to be striped, regardless of
 the striping on the source.
 
 Striping behaviour can be further modified with -ls and -ld. A minimum file size
