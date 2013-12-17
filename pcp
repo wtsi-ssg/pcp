@@ -176,16 +176,17 @@ This program traverses a directory tree and copies files in the tree in
 parallel. It does not copy individual files in parallel. It should be invoked
 via mpirun.
 
-Detailed information can be found here:
+If run with the -l flag or -lf flags pcp will be stripe aware. -l will cause
+stripe information to be copied from the source files and directories. -lf will 
+set all files and directories on the destination to be striped, regardless of
+the striping on the source.
 
-http://mediawiki.internal.sanger.ac.uk/wiki/index.php/Parallel_file_copies
+Striping behaviour can be further modified with -ls and -ld. A minimum file size
+can be set with -ls. Files below this size will not be striped, regardless of
+the souce striping. -ld will cause all directories to be unstriped.
 
-If run with the -l flag, pcp will be lustre stripe aware. When it encounters
-a striped file it will stripe the copy across all OSTs at the destination. Note
-that it does not exactly preserve stripe information.
-
-If a size is specified with -ls, pcp will not stripe files smaller than this,
-even if the original is striped.
+-l requires that the source and destination filesystems must be lustre.
+-lf can be used when only the destination filesystem is lustre.
 
 For maximum efficiency, ensure tasks are spread across as many different
 machines as possible using ptile=1 to prevent local network bottlenecks.
