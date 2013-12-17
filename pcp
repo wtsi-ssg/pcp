@@ -209,12 +209,16 @@ machines as possible to prevent local network bottlenecks.
     group.add_argument("-l", help="copy lustre stripe information",
                        default=False, action="store_true")
     group.add_argument("-lf",
-                       help=("Force striping of all files. Can be combined"
-                             "with -ls."), default=False, action="store_true")
+                       help=("Force striping of all files and directories. Can be combined"
+                             "with -ls and -ld."), default=False, action="store_true")
     parser.add_argument("-ls",
                         help=("do not stripe files smaller than B "
                               "bytes. Implies -l. Size can be suffixed"
                               "with k,M,G,T,P"), metavar="B", default=0)
+    parser.add_argument("-ld",
+                        help="Do not stripe diretories.", default=False,
+                        action="store_true")
+
     parser.add_argument("-R",
                         help=("Restart a copy from a checkpoint file DUMPFILE."),
                         type=str, metavar="DUMPFILE", default=None)
@@ -243,7 +247,6 @@ machines as possible to prevent local network bottlenecks.
         Abort()
 
     if args.ls != 0:
-        args.l = True
         args.ls = SIConvert(args.ls)
         if args.ls == -1:
             print "Error: incorrect size specification."
@@ -277,18 +280,27 @@ def sanitycheck(sourcedir, destdir):
         print
         Abort()
         
-    # if lustre option is set, check we are on a lustre filesystem.
-    if LSTRIPE or FORCESTRIPE:
+    # If we are using lustre stripe options, check that the source and/or
+    # destination filesystems are lustre   
+    if LSTRIPE:
         try:
             lustreapi.getstripe(sourcedir)
         except IOError, error:
             if error.errno == 25:
-                print ("ERROR: %s is not a lustre directory but lustre stripe"
-                       " preservation is set.") % sourcedir
+                print ("ERROR: You have asked me to copy lustre striping attributes, but"
+                       " %s is not a lustre directory.") % sourcedir
                 print "Exiting."
                 Abort()
-    #Create the top level destdir if it does not already exist
-    attemptCreateDir(sourcedir, destdir)
+    try:
+        createDir(sourcedir, destdir)
+    except IOError, error:
+        if error.errno == 25:
+            print ("ERROR: %s is not a lustre directory but lustre stripe"
+                   " options are set.") % destdir
+            print "Exiting."
+            Abort()
+
+
 
 def scantree(sourcedir, statedb):
     """Scans sourcedir recursively and returns a list of filestate objects and
@@ -843,10 +855,9 @@ def createDir(sourcedir, destdir):
 
     try:
         if LSTRIPE or FORCESTRIPE:
-            if LSTRIPE:
+            if LSTRIPE and not NODIRSTRIPE:
                 layout = lustreapi.getstripe(sourcedir)
-
-            if (LSTRIPE and layout.isstriped()) or FORCESTRIPE:
+            if (LSTRIPE and layout.isstriped()) or ( FORCESTRIPE and not NODIRSTRIPE ):
                 if VERBOSE:
                     print "(striped)",
                 lustreapi.setstripe(destdir, stripecount=-1)
@@ -1129,6 +1140,7 @@ try:
     LSTRIPE = args.l       # preserve lustre information
     MINSTRIPESIZE = args.ls  # don't stripe for files smaller than this
     FORCESTRIPE = args.lf   # Stripe all files regardless of source striping
+    NODIRSTRIPE = args.ld # Stripe all directories regardless of source striping
     WARNINGS = 0 # number of warning
     VERBOSE = args.v    # Should we be verbose
     DUMPDB = args.K     # Checkpoint to this directory.
@@ -1161,6 +1173,8 @@ try:
             print "Will copy lustre stripe information."
         if FORCESTRIPE:
             print "Will force stripe all files."
+        if (LSTRIPE or FORCESTRIPE) and NODIRSTRIPE:
+            print "Will not stripe directories."
         if (LSTRIPE or FORCESTRIPE) and  MINSTRIPESIZE > 0:
             print "Will not stripe files smaller than %s" \
                 % prettyPrint(MINSTRIPESIZE)
