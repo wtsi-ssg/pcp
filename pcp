@@ -232,7 +232,7 @@ bsub -R "span[ptile=1]" -oo logfile.txt -n 4  mpirun pcp ... """)
                        default=False, action="store_true")
     group.add_argument("-lf",
                        help=("Force striping of all files and directories. Can be combined"
-                             "with -ls and -ld."), default=False, action="store_true")
+                             " with -ls and -ld."), default=False, action="store_true")
     parser.add_argument("-ls",
                         help=("do not stripe files smaller than B "
                               "bytes. Implies -l. Size can be suffixed"
