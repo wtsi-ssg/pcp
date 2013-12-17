@@ -864,6 +864,9 @@ def createDir(sourcedir, destdir):
     global WARNINGS
 
     # Don't worry is the destination directory already exists
+    if VERBOSE:
+        print "R%i: %s mkdir %s" % (rank, timestamp(), destdir),
+
     try:
         os.mkdir(destdir)
     except OSError, error:
@@ -888,14 +891,19 @@ def createDir(sourcedir, destdir):
 
     try:
         if LSTRIPE or FORCESTRIPE:
-            if LSTRIPE and not NODIRSTRIPE:
+            if LSTRIPE:
                 layout = lustreapi.getstripe(sourcedir)
             if (LSTRIPE and layout.isstriped()) or ( FORCESTRIPE and not NODIRSTRIPE ):
                 if VERBOSE:
-                    print "(striped)",
+                    print "(striped)"
                 lustreapi.setstripe(destdir, stripecount=-1)
             else:
+                if VERBOSE:
+                    print "(non striped)"
                 lustreapi.setstripe(destdir, stripecount=1)
+        else:
+            if VERBOSE:
+                print ""
     except IOError, error:
         if error.errno != 13:
             raise
@@ -913,8 +921,6 @@ def attemptCreateDir(sourcedir, destdir):
     else:
         i = 0
         while i < MAXTRIES:
-            if VERBOSE:
-                print "R%i: %s mkdir %s" % (rank, timestamp(), destdir)
             try:
                 createDir(sourcedir, destdir)
                 break
