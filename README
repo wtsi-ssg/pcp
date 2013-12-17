@@ -86,11 +86,20 @@ a striped file it will stripe the copy across all OSTs at the destination. Note
 that it does not exactly preserve stripe information, but copes with case where
 the number of OSTs is different at the source and destination.
 
+If -lf is set, pcp will stripe all files and directories at the destination. 
+
+-l requires that the source and destination filesystems are both lustre.
+-lf can be used when only the destination filesystem is lustre.
+
+The following options can be used in conjunction with -l/-lf to further modify
+striping behaviour:
+
 If a size is specified with -ls, pcp will not stripe files smaller than this,
 even if the original is striped.
 
-If -lf is set, pcp will stripe all files at the destination. This options can
-be combined with -ls to force striping of files over a certain size.
+If -ld is specified, destination directories will not be striped. (The contents
+themselves may still be striped).
+
 
 Checkpointing
 -------------
