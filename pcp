@@ -757,7 +757,7 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
         # a node that does not have the FS mounted.
         if attempt < MAXTRIES:
             attempt += 1
-            statedb.execute("""UPDATE FILECPY SET ATTEMPTS = ?,
+            statedb.execute("""UPDATE FILECPY SET STATE = 0, ATTEMPTS = ?,
                             LASTRANK = ? WHERE ID = ?""", 
                             (attempt, workerrank, idx))
             WARNINGS += 1
@@ -772,9 +772,10 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
             copyremains -= 1
             md5remains -= 1
             WARNINGS += 1 
-            print ("R%i: WARNING %s does not exist: on"
+            print ("R%i: %s WARNING %s does not exist: on "
                    "attempt %i. Maybe someone moved the file?"
-                   " Skipping...")
+                   " Skipping...") %(workerrank, timestamp(),
+                                     filename, attempt)
     return(copyremains, md5remains)
 
 def ShutdownWorkers(starttime):
