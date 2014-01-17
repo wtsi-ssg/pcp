@@ -75,8 +75,9 @@ Checksum
 --------
 
 If run with the -c flag, pcp will md5 checksum files after they are copied.
-pcp tries, but does guarantee, to run the md5sum on a separate rank to that
-which did the copy. 
+In order to minimize the risk of checksumming cached data rather than data on 
+disk, pcp runs the md5 calculation on a different MPI rank to the one that did 
+the copy and uses posix_fadvise to tall the kernel not to cache files.
 
 lustre striping
 ---------------
