@@ -121,9 +121,8 @@ SRCMD5 TEXT,
 SIZE INTEGER,
 ATTEMPTS INTEGER DEFAULT 0,
 LASTRANK INTEGER DEFAULT 0)""")
-    filedb.execute("""CREATE INDEX SIZE_IDX ON FILECPY(SIZE)""")
-    filedb.execute("""CREATE INDEX STATE_IDX ON FILECPY(STATE)""")
-    filedb.execute("""CREATE INDEX LAST_IDX ON FILECPY(LASTRANK)""")
+    filedb.execute("""CREATE INDEX COPY_IDX ON FILECPY(STATE, LASTRANK)""")
+    filedb.execute("""CREATE INDEX MD5_IDX ON FILECPY(STATE, SIZE, LASTRANK)""")
     # Table to hold program arguments
     filedb.execute("""CREATE TABLE ARGUMENTS(
 ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -622,8 +621,10 @@ def DispatchWork(statedb):
                 continue
 
             if MD5SUM:
+                # We now know the size, and can improve load balancing between workers by
+                # selecting the largest files first.
                 task = statedb.execute("""SELECT * FROM FILECPY WHERE STATE == 2 AND
-                       LASTRANK <> ? LIMIT 1""",(lastrank, )).fetchone()
+                       LASTRANK <> ? ORDER BY SIZE DESC LIMIT 1""",(lastrank, )).fetchone()
                 if task:
                     statedb.execute("""UPDATE FILECPY SET STATE = 3 WHERE ID = ?""",(task[0],))
                     comm.send(("MD5", task[1], task[0]),
