@@ -601,7 +601,7 @@ def DispatchWork(statedb):
     while copyremains > 0 or md5remains > 0:
         # See if we need to checkpoint
         if DUMPDB:
-            if cptimer.read() > DUMPINTERVAL * 60:
+            if cptimer.read() > DUMPINTERVAL:
                 print "RO: Writing checkpoint to %s..." %DUMPDB,
                 dumpDB(statedb, DUMPDB)
                 print "Done"
@@ -1189,7 +1189,7 @@ try:
     WARNINGS = 0 # number of warning
     VERBOSE = args.v    # Should we be verbose
     DUMPDB = args.K     # Checkpoint to this directory.
-    DUMPINTERVAL = args.Km # Checkpoint period
+    DUMPINTERVAL = args.Km * 60 # Checkpoint period
     CHECKPOINTNOW = False
     sourcedir = args.SOURCE.rstrip(os.path.sep) # source
     destdir = args.DEST.rstrip(os.path.sep)  # destination
