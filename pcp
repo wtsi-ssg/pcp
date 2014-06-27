@@ -133,8 +133,8 @@ LASTRANK INTEGER DEFAULT 0)""")
     filedb.execute("""CREATE TABLE DIRLIST (
 ID INTEGER PRIMARY KEY AUTOINCREMENT,
 DIRNAME TEXT,
-MTIME REAL,
-ATIME REAL)""")
+MTIME INTEGER,
+ATIME INTEGER)""")
 
     # Table to hold program arguments
     filedb.execute("""CREATE TABLE ARGUMENTS(
@@ -554,7 +554,7 @@ def copyDirectories(sourcedir, destdir, statedb):
             i = 0
             while i < MAXTRIES:
                 try:
-                    createDir(sourcedir, destination, statedb, idx)
+                    createDir(d, destination, statedb, idx)
                     break
                 except IOError, error:
                     i += 1
