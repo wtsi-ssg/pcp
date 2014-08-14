@@ -179,6 +179,6 @@ setup(name = "pcp",
       author = "Guy Coates",
       author_email = "gmpc@sanger.ac.uk",
       scripts = ["pcp"],
-      packages=["lustre"],
+      packages=["lustre", "fastwalk"],
       package_data = lustre_packagedata,
 )

@@ -30,6 +30,7 @@ import pickle
 import signal
 import gzip
 
+from walk import fastwalk
 from lustre import lustreapi
 from collections import deque
 from mpi4py import MPI
@@ -40,32 +41,7 @@ try:
 except pkg_resources.DistributionNotFound:
     __version__ = "UNRELEASED"
 
-# Ctypes boilerplate for readdir/opendir/closedir
 clib = ctypes.CDLL("libc.so.6", use_errno=True)
-
-class dirent(ctypes.Structure):
-    _fields_ = [
-        ("ino_t", ctypes.c_ulong),
-        ("off_t", ctypes.c_ulong),
-        ("d_reclen", ctypes.c_short),
-        ("d_type",  ctypes.c_char ),
-        ("d_name", ctypes.c_char * 4000)
-]
-
-class c_dir(ctypes.Structure):
-    pass
-
-dirent_p = ctypes.POINTER(dirent)
-c_dir_p = ctypes.POINTER(c_dir)
-opendir = clib.opendir
-opendir.argtypes = [ctypes.c_char_p]
-opendir.restype = c_dir_p
-closedir = clib.closedir
-closedir.argtypes = [c_dir_p]
-closedir.restype = ctypes.c_int
-readdir = clib.readdir
-readdir.argtypes = [c_dir_p]
-readdir.restype = dirent_p
 
 class Timer:
     """Simple timer / stopwatch class."""
@@ -314,7 +290,7 @@ def scantree(sourcedir, statedb):
     startime = time.time()
     statedb.execute("""INSERT INTO DIRLIST (DIRNAME) VALUES(?)""",
                     (sourcedir,))
-    for source, dirs, files in fastwalk(sourcedir):
+    for source, dirs, files in fastwalk.fastwalk(sourcedir):
         dirlist = [(os.path.join(source, d),) for d in dirs ]
         statedb.executemany("""INSERT INTO DIRLIST (DIRNAME) VALUES (?)""",
                             dirlist)
@@ -333,48 +309,6 @@ def scantree(sourcedir, statedb):
            " (%.0f items/sec)."
         % (rank, totalfiles, totaldirs, walltime, rate))
     return()
-
-def fastwalk (sourcedir):
-    """Improved version of os.walk: generates a tuple of (sourcedir,[dirs],
-    [files]). This version tries to use readdir to avoid expensive stat
-    operations on lustre."""
-
-    filelist = []
-    dirlist = []
-    global WARNINGS
-    dirp = opendir(sourcedir)
-    if not bool(dirp):
-        print "R%i WARNING: Cannot open %s:"  % (rank, sourcedir),
-        print os.strerror(ctypes.get_errno())
-        WARNINGS += 1
-    else:
-        while True:
-            p = readdir(dirp)
-            if not p:
-                break
-            name = p.contents.d_name
-            filetype = p.contents.d_type
-            if not name in (".",".."):
-                if filetype == "\x00":
-                    # Filesystem does not support d_type, so we hae to do
-                    # the stat.
-                    fullname = os.path.join(sourcedir, name)
-                    mode = safestat(fullname).st_mode
-                    if stat.S_ISDIR(mode):
-                        filetype = "\x04"
-                    else:
-                        filetype = "\x08"
-                if filetype == "\x04":
-                    dirlist.append(name)
-                else:
-                    filelist.append(name)
-        closedir(dirp)
-
-    yield (sourcedir, dirlist, filelist)
-    for d in dirlist:
-        fullname = os.path.join(sourcedir, d)
-        for entries in fastwalk(fullname):
-            yield entries
 
 def fadviseSeqNoCache(fileD):
     """Advise the kernel that we are only going to access file-descriptor
