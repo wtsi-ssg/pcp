@@ -27,6 +27,7 @@ import time
 import ctypes
 import sqlite3
 import pickle
+import math
 import signal
 import gzip
 
@@ -95,6 +96,7 @@ FILENAME TEXT,
 STATE INTEGER DEFAULT 0,
 SRCMD5 TEXT,
 SIZE INTEGER,
+CHUNKS INTEGER DEFAULT -1,
 ATTEMPTS INTEGER DEFAULT 0,
 LASTRANK INTEGER DEFAULT 0)""")
     filedb.execute("""CREATE INDEX COPY_IDX ON FILECPY(STATE, LASTRANK)""")
@@ -320,30 +322,86 @@ def fadviseSeqNoCache(fileD):
     clib.posix_fadvise(fileD, offset, length, POSIX_FADV_SEQUENTIAL)
     clib.posix_fadvise(fileD, offset, length, POSIX_FADV_DONTNEED)
 
-def md5copy(src, dst, blksize, MD5SUM):
+def md5copy(src, dst, blksize, MD5SUM, chunk):
     """Combined copy / md5 calcuation function. Copies data from src to dst in
     blksize chunks. If MD5SUM is true, it also calculates the md5sum of the
-    source file. Returns the md5sum of the source."""
+    source file. Returns the md5sum of the source and the number of bytes copied."""
     md5hash = hashlib.new("md5")
+    bytescopied = 0
     infile = open(src, "rb")
-    outfile = open(dst, "wb")
-    fadviseSeqNoCache(infile.fileno())
-    fadviseSeqNoCache(outfile.fileno())
-    while True:
-        data = infile.read(blksize)
-        if not data:
-            break
-        outfile.write(data)
-        if MD5SUM:
-            md5hash.update(data)
+
+    if chunk < 0:
+        # Copy the file in one go:
+        outfile = open(dst, "wb")
+        fadviseSeqNoCache(infile.fileno())
+        fadviseSeqNoCache(outfile.fileno())
+        while True:
+            data = infile.read(blksize)
+            if not data:
+                break
+            outfile.write(data)
+            bytescopied += len(data)
+            if MD5SUM:
+                md5hash.update(data)
+    
+    else:
+        # copy CHUNKSIZE bytes:
+        outfile = open(dst, "r+")
+        fadviseSeqNoCache(infile.fileno())
+        fadviseSeqNoCache(outfile.fileno())
+        infile.seek(chunk*CHUNKSIZE)
+        outfile.seek(chunk*CHUNKSIZE)
+        
+        nreads, remainder = divmod(CHUNKSIZE, blksize)
+        for i in xrange(nreads):
+            data = infile.read(blksize)
+            outfile.write(data)
+            bytescopied += len(data)
+            if MD5SUM:
+                md5hash.update(data)
+        if remainder > 0:
+            data = infile.read(remainder)
+            outfile.write(data)
+            bytescopied += len(data)
+            if MD5SUM:
+                md5hash.update(data)
+
     infile.close()
     outfile.close()
     digest = md5hash.hexdigest()
+
     if not MD5SUM:
         digest = None
-    return(digest)
+    return(digest, bytescopied)
 
-def calcmd5(filename):
+def createstripefile(src, dst, size):
+    """Create a file dst with the lustre stripe information copied from src, unless 
+    filesystem is < size, in which case we set the striping to 1."""
+    if LSTRIPE:
+        layout = lustreapi.getstripe(src)
+    if (LSTRIPE and layout.isstriped()) or FORCESTRIPE:
+        if size < MINSTRIPESIZE:
+            stripestatus = -1
+            count = 1
+        else:
+            stripestatus = 1
+            count = -1
+    else:
+        count = 1
+    if not DRYRUN:
+        try:
+            lustreapi.setstripe(dst, stripecount=count)
+        except IOError, error:
+            if error.errno == 17:
+                # file exists; blow it away and try again...
+                os.remove(dst)
+                lustreapi.setstripe(dst, stripecount=count)
+            else:
+                raise
+
+    return(stripestatus)
+
+def calcmd5(filename, chunk):
     """calculate the md5sum of a file. Returns a tuple of  (md5sum,amount of
     data checksummed), or (None,0) in the case of symlinks."""
     md5hash = hashlib.new("md5")
@@ -351,23 +409,40 @@ def calcmd5(filename):
     # Use the optimal blocksize for IO.
     filestat = safestat(filename)
     blksize = filestat.st_blksize
-    size = filestat.st_size
     mode = filestat.st_mode
 
+    byteschecked = 0
+
     if stat.S_ISLNK(mode):
-        return(None, 0)
+        return(None, byteschecked)
 
     fh = open(filename, "rb")
     fadviseSeqNoCache(fh.fileno())
+    # MD5 the whole file
+    if chunk < 0:
+        while True:
+            data = fh.read(blksize)
+            byteschecked += len(data)
+            if not data:
+                break
+            md5hash.update(data)
 
-    while True:
-        data = fh.read(blksize)
-        if not data:
-            break
-        md5hash.update(data)
+    else:
+        #MD5 just our chunk
+        fh.seek(chunk*CHUNKSIZE)
+        nreads, remainder = divmod(CHUNKSIZE, blksize)
+        for i in xrange(nreads):
+            data = fh.read(blksize)
+            md5hash.update(data)
+            byteschecked += len(data)
+        if remainder > 0:
+            data = fh.read(remainder)
+            md5hash.update(data)
+            byteschecked += len(data)
+            
     fh.close()
     digest = md5hash.hexdigest()
-    return(digest, size)
+    return(digest, byteschecked)
 
 
 def ConsumeWork(sourcedir, destdir):
@@ -388,7 +463,7 @@ def ConsumeWork(sourcedir, destdir):
         if data == "SHUTDOWN":
             break
 
-        action, filename, idx = data
+        action, filename, idx, chunk = data
         md5sum = None
         destination = mungePath(sourcedir, destdir, filename)
 
@@ -396,7 +471,7 @@ def ConsumeWork(sourcedir, destdir):
             copytimer.start()
             try:
                 bytes, speed, md5sum, stripestatus, status = \
-                    copyFile(filename, destination)
+                    copyFile(filename, destination, chunk)
 
             except (IOError, OSError) as error:
                 speed = 0
@@ -427,7 +502,7 @@ def ConsumeWork(sourcedir, destdir):
                 md5sum = "DEADBEAFdeadbeafDEADBEAFdeadbeaf"
             else:
                 try:
-                    md5sum, size = calcmd5(destination)
+                    md5sum, size = calcmd5(destination, chunk)
                     status = 0
                 except (IOError, OSError):
                     size = 0
@@ -538,7 +613,6 @@ def DispatchWork(statedb):
             print "Done"
             CHECKPOINTNOW = False
 
-
         # Listen for workers reporting in and deal with the results
         if comm.Iprobe(source=MPI.ANY_SOURCE, tag=1):
             action, md5sum, idx, workerrank, status, speed, size, \
@@ -568,7 +642,7 @@ def DispatchWork(statedb):
                                   LASTRANK <> ? LIMIT 1""",(lastrank, )).fetchone()
             if task:
                 statedb.execute("""UPDATE FILECPY SET STATE = 1 WHERE ID = ?""",(task[0],))
-                comm.send(("COPY", task[1], task[0]),
+                comm.send(("COPY", task[1], task[0], task[5]),
                           dest=worker, tag=1)
                 continue
 
@@ -579,7 +653,7 @@ def DispatchWork(statedb):
                        LASTRANK <> ? ORDER BY SIZE DESC LIMIT 1""",(lastrank, )).fetchone()
                 if task:
                     statedb.execute("""UPDATE FILECPY SET STATE = 3 WHERE ID = ?""",(task[0],))
-                    comm.send(("MD5", task[1], task[0]),
+                    comm.send(("MD5", task[1], task[0], task[5]),
                               dest=worker, tag=1)
                     continue
             # There is work, but not for this worker. Send to the back of the queue
@@ -590,16 +664,21 @@ def DispatchWork(statedb):
 
 def processMD5(statedb, md5sum, idx, workerrank, status, copyremains, md5remains):
     global WARNINGS
-    filename, attempt, srcmd5 = statedb.execute("""SELECT FILENAME, ATTEMPTS, SRCMD5
-    FROM FILECPY WHERE ID = ?""",(idx,)).fetchone()
+    filename, attempt, srcmd5, chunk = statedb.execute("""SELECT FILENAME, ATTEMPTS, SRCMD5,
+    CHUNKS FROM FILECPY WHERE ID = ?""", (idx,)).fetchone()
     if status == 0:
         if srcmd5 == md5sum:
             statedb.execute("""UPDATE FILECPY SET STATE = 4
                             WHERE ID = ?""", (idx,))
             md5remains -= 1
             if VERBOSE:
-                print "R%i: %s %s md5sum verified (%s)" \
-                    % (workerrank, timestamp(), filename, md5sum)
+                if chunk < 0:
+                    print "R%i: %s %s md5sum verified (%s)" \
+                        % (workerrank, timestamp(), filename, md5sum)
+                else:
+                    print "R%i: %s %s chunk %i md5sum verified (%s)" \
+                        % (workerrank, timestamp(), filename, chunk, md5sum)
+
         else:
             # This is bad; we got a md5 mismatch, but no IO
             # exceptions were thrown.
@@ -614,6 +693,7 @@ def processMD5(statedb, md5sum, idx, workerrank, status, copyremains, md5remains
                        % (workerrank, timestamp(), filename, srcmd5, md5sum, attempt))
                 destfile = mungePath(sourcedir, destdir, filename)
                 corruptfile = destfile+"_CORRUPTED_%i" %attempt
+                # FIXME: Won't work for chunks
                 print ("R%i: %s Renaming corrupt file as %s for later analysis." 
                        % (workerrank, timestamp(), corruptfile))
                 os.rename (destfile, corruptfile)
@@ -641,7 +721,7 @@ def processMD5(statedb, md5sum, idx, workerrank, status, copyremains, md5remains
 
 def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripestatus, copyremains, md5remains):
     global WARNINGS
-    filename, attempt = statedb.execute("""SELECT FILENAME, ATTEMPTS FROM FILECPY 
+    filename, attempt, chunk = statedb.execute("""SELECT FILENAME, ATTEMPTS, CHUNKS FROM FILECPY 
                         WHERE ID = ?""",(idx, )).fetchone()
 
     # Copy is complete. 
@@ -659,9 +739,15 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
                 elif stripestatus == -1:
                     stripetxt = "(small file: ignored striping)"
 
-            print "R%i: %s copied %s %s %s (%s/s)" \
-                  % (workerrank, timestamp(), filename, stripetxt,
-                     prettyPrint(size), prettyPrint(speed))
+            if chunk < 0:
+                print "R%i: %s copied %s %s %s (%s/s)" \
+                    % (workerrank, timestamp(), filename, stripetxt,
+                       prettyPrint(size), prettyPrint(speed))
+            else:
+                print "R%i: %s copied %s chunk %i %s (%s/s)" \
+                    % (workerrank, timestamp(), filename, chunk,
+                       prettyPrint(size), prettyPrint(speed))
+
             if status == 4:
                 # unable to preserve permissions
                 WARNINGS += 1
@@ -729,6 +815,27 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
                    "attempt %i. Maybe someone moved the file?"
                    " Skipping...") %(workerrank, timestamp(),
                                      filename, attempt)
+
+    elif status == 6:
+        chunks = int(math.ceil(size / float(CHUNKSIZE)))
+        with statedb:
+            for i in range(chunks):
+                statedb.execute("INSERT INTO FILECPY (FILENAME, CHUNKS) VALUES (?,?)",
+                           (filename, i))
+            statedb.execute("DELETE FROM FILECPY WHERE ID = ?", (idx,))
+            copyremains += chunks-1
+            md5remains += chunks-1
+        if VERBOSE:
+            stripetxt = ""
+            if LSTRIPE or FORCESTRIPE:
+                if stripestatus == 1:
+                    stripetxt = "(striped)"
+                elif stripestatus == 0:
+                    stripetxt = "(unstriped)"
+                elif stripestatus == -1:
+                    stripetxt = "(small file: ignored striping)"
+            print ("R%i: %s Large file %s ; copying in %i chunks." 
+                   %(workerrank, filename, stripetxt, chunks))
     return(copyremains, md5remains)
 
 def ShutdownWorkers(starttime):
@@ -861,7 +968,7 @@ def safestat(filename):
             if error.errno != 4:
                 raise
 
-def copyFile (src, dst):
+def copyFile (src, dst, chunk):
     """Copy a file from src to dst. The copy is lustre stripe aware.
     Returns (bytes copied,speed,md5sum,stripestatus,status).
     status = 0 # copy worked
@@ -870,6 +977,7 @@ def copyFile (src, dst):
     status = 3 # permission denied
     status = 4 # unable to preserve permissions
     status = 5 # file does not exist
+    status = 6 # file is to be copied in chunks
     """
 
     md5sum = None
@@ -882,36 +990,32 @@ def copyFile (src, dst):
     mode = srcstat.st_mode
     size = srcstat.st_size
     blksize = srcstat.st_blksize
-
+    
     # regular files
     if stat.S_ISREG(mode):
-        if LSTRIPE or FORCESTRIPE:
-            if LSTRIPE:
-                layout = lustreapi.getstripe(src)
-            if (LSTRIPE and layout.isstriped()) or FORCESTRIPE:
-                if size < MINSTRIPESIZE:
-                    stripestatus = -1
-                    count = 1
-                else:
-                    stripestatus = 1
-                    count = -1
-            else:
-                count = 1
-            if not DRYRUN:
-                try:
-                    lustreapi.setstripe(dst, stripecount=count)
-                except IOError, error:
-                    if error.errno == 17:
-                        # file exists; blow it away and try again...
-                        os.remove(dst)
-                        lustreapi.setstripe(dst, stripecount=count)
-                    else:
-                        raise
+        if size > CHUNKSIZE:
+            # We've found a large file
+            if chunk == -1:
+                # Set the striping, and then create the sparse file
+                # to fill in later.
+                if LSTRIPE or FORCESTRIPE:
+                    stripestatus = createstripefile(src, dst, size)
+                    outfile = open(dst,"wb")
+                    outfile.truncate(size)
+                    outfile.close()
+                    return(size,0,0,stripestatus,6)
+                # if we are a chunk we skip stripe setting as it has already 
+                # been done
+        else:
+            if LSTRIPE or FORCESTRIPE:
+                stripestatus = createstripefile(src, dst, size)
+
+
         if DRYRUN:
             md5sum = "DEADBEAFdeadbeafDEADBEAFdeadbeaf"
         else:
             if PRESERVE:
-                md5sum = md5copy(src, dst, blksize, MD5SUM)
+                md5sum, bytescopied = md5copy(src, dst, blksize, MD5SUM, chunk)
                 try:
                     os.chown(dst, srcstat.st_uid, srcstat.st_gid)
                     os.chmod(dst, srcstat.st_mode)
@@ -923,14 +1027,14 @@ def copyFile (src, dst):
                     else:
                         raise
             else:
-                md5sum = md5copy(src, dst, blksize, MD5SUM)
+                md5sum, bytescopied = md5copy(src, dst, blksize, MD5SUM, chunk)
             if VERBOSE:
                 endtime = time.time()
                 if size == 0:
                     speed = 0
                 else:
-                    speed = size / (endtime - starttime)
-        return(size, speed, md5sum, stripestatus, status)
+                    speed = bytescopied / (endtime - starttime)
+        return(bytescopied, speed, md5sum, stripestatus, status)
 
     # symlinks
     if stat.S_ISLNK(mode):
@@ -1098,6 +1202,8 @@ try:
     destdir = args.DEST.rstrip(os.path.sep)  # destination
     glob = args.g    # only copy files matching glob
 
+    # 100MB
+    CHUNKSIZE = 1024 * 1024 * 100
 
     # Set the final state of process
     if MD5SUM:
