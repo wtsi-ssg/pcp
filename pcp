@@ -377,6 +377,7 @@ def md5copy(src, dst, blksize, MD5SUM, chunk):
 def createstripefile(src, dst, size):
     """Create a file dst with the lustre stripe information copied from src, unless 
     filesystem is < size, in which case we set the striping to 1."""
+    stripestatus = 0
     if LSTRIPE:
         layout = lustreapi.getstripe(src)
     if (LSTRIPE and layout.isstriped()) or FORCESTRIPE:
@@ -1203,7 +1204,7 @@ try:
     glob = args.g    # only copy files matching glob
 
     # 100MB
-    CHUNKSIZE = 1024 * 1024 * 100
+    CHUNKSIZE = 1024 * 1024 * 500
 
     # Set the final state of process
     if MD5SUM:
