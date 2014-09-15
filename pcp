@@ -1273,6 +1273,5 @@ try:
 #except Exception, err:
 except  (Exception, KeyboardInterrupt), err:
     print "Exception on rank %i host %s:" %(rank, hostname)
-    print err
-    print traceback.print_tb(sys.exc_info()[2])
+    print traceback.format_exc()
     Abort()
