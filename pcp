@@ -460,23 +460,23 @@ def ConsumeWork(sourcedir, destdir):
 
     # Poll for work.
     while True:
-        data = comm.recv(source=0, tag=1)
-        if data == "SHUTDOWN":
+        msg = comm.recv(source=0, tag=1)
+        action = msg[0]
+        if action == "SHUTDOWN":
             break
-
-        action, filename, idx, chunk = data
+        (filename, idx, chunk) = msg[1]
         md5sum = None
         destination = mungePath(sourcedir, destdir, filename)
 
         if action == "COPY":
             copytimer.start()
             try:
-                bytes, speed, md5sum, stripestatus, status = \
+                size, speed, md5sum, stripestatus, status = \
                     copyFile(filename, destination, chunk)
 
             except (IOError, OSError) as error:
                 speed = 0
-                bytes = 0
+                size = 0
                 stripestatus = 0
                 # permission denied errors are not fatal. Skip over the file
                 # and carry on.
@@ -489,10 +489,11 @@ def ConsumeWork(sourcedir, destdir):
                     status = 1
 
             if status == 0 or status == 4 :
-                bytescopied += bytes
+                bytescopied += size
                 filescopied += 1
-            comm.send(("COPYRESULT", md5sum, idx, rank, status, speed,
-                       bytes, stripestatus), dest=0, tag=1)
+            msg = ("COPYRESULT",( md5sum, idx, rank, status, speed,
+                                  size, stripestatus))
+            comm.send(msg, dest=0, tag=1)
             copytimer.stop()
 
         if action == "MD5":
@@ -508,9 +509,8 @@ def ConsumeWork(sourcedir, destdir):
                 except (IOError, OSError):
                     size = 0
                     status = 1
-
-            comm.send(("MD5RESULT", md5sum, idx, rank, status,
-                       None, None, None), dest=0, tag=1)
+            msg = ("MD5RESULT", (md5sum, idx, rank, status, None, None, None))
+            comm.send(msg, dest=0, tag=1)
             md5done += 1
             byteschksummed += size
             md5timer.stop()
@@ -518,6 +518,7 @@ def ConsumeWork(sourcedir, destdir):
     # Return stats
     comm.gather((filescopied, md5done, bytescopied, byteschksummed,
                  copytimer.read(), md5timer.read()), root=0)
+    
     return(0)
 
 def copyDirectories(sourcedir, destdir, statedb):
@@ -551,14 +552,18 @@ def checkAlive(rank, workers, timeout):
     has not responded after timeout seconds we bail."""
 
     if rank > 0:
-        comm.send(("ALIVE", rank), dest=0, tag=3)
+        msg = ("ALIVE", (rank,))
+        comm.send(msg, dest=0, tag=3)
     else:
         expectedworkers = set(range(1, workers))
         aliveworkers = set()
         giveuptime = time.time() + timeout
         while time.time() < giveuptime:
             if comm.Iprobe(source=MPI.ANY_SOURCE, tag=3):
-                status, rank = comm.recv(source=MPI.ANY_SOURCE, tag=3)
+                msg = comm.recv(source=MPI.ANY_SOURCE, tag=3)
+                status = msg[0]
+                rank = msg[1][0]
+
                 aliveworkers.add(rank)
                 if len(aliveworkers) == len(expectedworkers):
                     print "R0: All workers have reported in."
@@ -576,6 +581,9 @@ def DispatchWork(statedb):
 
     global WARNINGS
     global CHECKPOINTNOW
+    global COPYREMAINS
+    global MD5REMAINS
+
     # Queue containing worker who are ready for work.
     idleworkers = deque()
     idleworkers.extend(range(1, workers))
@@ -584,17 +592,17 @@ def DispatchWork(statedb):
         cptimer = Timer()
         cptimer.start()
 
-    copyremains = statedb.execute \
+    COPYREMAINS = statedb.execute \
         ("""SELECT COUNT(*) FROM FILECPY WHERE STATE == 0""").fetchone()[0]
         
-    md5remains = statedb.execute \
+    MD5REMAINS = statedb.execute \
         ("""SELECT COUNT(*) FROM FILECPY WHERE STATE < ?""",(ENDSTATE,)).fetchone()[0]
 
     if not MD5SUM:
-        md5remains = 0
+        MD5REMAINS = 0
 
     # loop until we have no more work to send.
-    while copyremains > 0 or md5remains > 0:
+    while COPYREMAINS > 0 or MD5REMAINS > 0:
         # See if we need to checkpoint
         if DUMPDB:
             if cptimer.read() > DUMPINTERVAL:
@@ -616,17 +624,18 @@ def DispatchWork(statedb):
 
         # Listen for workers reporting in and deal with the results
         if comm.Iprobe(source=MPI.ANY_SOURCE, tag=1):
-            action, md5sum, idx, workerrank, status, speed, size, \
-                stripestatus = comm.recv(source=MPI.ANY_SOURCE, tag=1)
+            msg = comm.recv(source=MPI.ANY_SOURCE, tag=1)
+            action = msg[0]
+            payload = msg[1]
+
+            workerrank = msg[1][2]
             idleworkers.appendleft(workerrank)
 
             if action == "COPYRESULT":
-                copyremains, md5remains  = processCopy(statedb, md5sum, idx, workerrank, status, size, speed,
-                            stripestatus, copyremains, md5remains)
+                processCopy(statedb, payload)
 
             if action == "MD5RESULT":
-                copyremains, md5remains = processMD5(statedb, md5sum, idx, workerrank, status, 
-                                                     copyremains, md5remains)
+                processMD5(statedb, payload)
 
         # try for dispatch
         if len(idleworkers) > 0:
@@ -643,8 +652,8 @@ def DispatchWork(statedb):
                                   LASTRANK <> ? LIMIT 1""",(lastrank, )).fetchone()
             if task:
                 statedb.execute("""UPDATE FILECPY SET STATE = 1 WHERE ID = ?""",(task[0],))
-                comm.send(("COPY", task[1], task[0], task[5]),
-                          dest=worker, tag=1)
+                msg = ("COPY", (task[1], task[0], task[5]))
+                comm.send(msg, dest=worker, tag=1)
                 continue
 
             if MD5SUM:
@@ -654,8 +663,8 @@ def DispatchWork(statedb):
                        LASTRANK <> ? ORDER BY SIZE DESC LIMIT 1""",(lastrank, )).fetchone()
                 if task:
                     statedb.execute("""UPDATE FILECPY SET STATE = 3 WHERE ID = ?""",(task[0],))
-                    comm.send(("MD5", task[1], task[0], task[5]),
-                              dest=worker, tag=1)
+                    msg = ("MD5", (task[1], task[0], task[5]))
+                    comm.send(msg, dest=worker, tag=1)
                     continue
             # There is work, but not for this worker. Send to the back of the queue
             idleworkers.appendleft(worker)
@@ -663,15 +672,26 @@ def DispatchWork(statedb):
     if VERBOSE:
         print "R0: No more work to do."
 
-def processMD5(statedb, md5sum, idx, workerrank, status, copyremains, md5remains):
+def processMD5(statedb, payload):
     global WARNINGS
+    global COPYREMAINS
+    global MD5REMAINS
+
+    md5sum = payload[0]
+    idx = payload[1]
+    workerrank = payload[2]
+    status = payload[3]
+    speed = payload[4]
+    size = payload[5]
+    stripestatus = payload[6]
+
     filename, attempt, srcmd5, chunk = statedb.execute("""SELECT FILENAME, ATTEMPTS, SRCMD5,
     CHUNKS FROM FILECPY WHERE ID = ?""", (idx,)).fetchone()
     if status == 0:
         if srcmd5 == md5sum:
             statedb.execute("""UPDATE FILECPY SET STATE = 4
                             WHERE ID = ?""", (idx,))
-            md5remains -= 1
+            MD5REMAINS -= 1
             if VERBOSE:
                 if chunk < 0:
                     print "R%i: %s %s md5sum verified (%s)" \
@@ -686,7 +706,7 @@ def processMD5(statedb, md5sum, idx, workerrank, status, copyremains, md5remains
             attempt += 1 
             statedb.execute("""UPDATE FILECPY SET STATE = 0, SRCMD5 = NULL, ATTEMPTS = ?,
                             LASTRANK = ? WHERE ID =?""",(attempt, workerrank, idx))
-            copyremains += 1
+            COPYREMAINS += 1
             if attempt < MAXTRIES:
                 WARNINGS +=1 
                 print ("R%i: %s WARNING: SILENT DATA CORRUPTION %s"
@@ -719,10 +739,21 @@ def processMD5(statedb, md5sum, idx, workerrank, status, copyremains, md5remains
             print ("R%i %s ERROR: Max number of md5 attempts reached on %s."
                    %(timestamp(), filename))
             Abort()
-    return(copyremains, md5remains)
+    return()
 
-def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripestatus, copyremains, md5remains):
+def processCopy(statedb, payload):
     global WARNINGS
+    global COPYREMAINS
+    global MD5REMAINS
+
+    md5sum = payload[0]
+    idx = payload[1]
+    workerrank = payload[2]
+    status = payload[3]
+    speed = payload[4]
+    size = payload[5]
+    stripestatus = payload[6]
+
     filename, attempt, chunk = statedb.execute("""SELECT FILENAME, ATTEMPTS, CHUNKS FROM FILECPY 
                         WHERE ID = ?""",(idx, )).fetchone()
 
@@ -730,7 +761,7 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
     if status == 0 or status == 4:
         statedb.execute("""UPDATE FILECPY SET STATE = 2, SRCMD5 = ?, LASTRANK = ?,
                         SIZE = ? WHERE ID = ? """,(md5sum, workerrank, size, idx))
-        copyremains -= 1
+        COPYREMAINS -= 1
         if VERBOSE:
             stripetxt = ""
             if LSTRIPE or FORCESTRIPE:
@@ -778,8 +809,8 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
         # nonstandard filetype
         statedb.execute("""UPDATE FILECPY SET STATE = ?
         WHERE ID = ? """,(ENDSTATE, idx))
-        copyremains -= 1
-        md5remains -= 1
+        COPYREMAINS -= 1
+        MD5REMAINS -= 1
         WARNINGS +=1 
         print "R%i: %s WARNING: unable to copy %s (%s). Skipping..." \
             % (workerrank, timestamp(), filename, md5sum)
@@ -787,8 +818,8 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
         # permission denied
         statedb.execute("""UPDATE FILECPY SET STATE = ? 
         WHERE ID = ? """,(ENDSTATE, idx))
-        copyremains -= 1
-        md5remains -= 1
+        COPYREMAINS -= 1
+        MD5REMAINS -= 1
         WARNINGS += 1
         print "R%i: %s WARNING: permission denied on %s. Skipping..." \
             % (workerrank, timestamp(), filename)
@@ -810,8 +841,8 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
             # The user might simply have moved the file during the copy
             statedb.execute("""UPDATE FILECPY SET STATE = ?, SRCMD5 = ? 
                             WHERE ID = ? """,(ENDSTATE, md5sum, idx))
-            copyremains -= 1
-            md5remains -= 1
+            COPYREMAINS -= 1
+            MD5REMAINS -= 1
             WARNINGS += 1 
             print ("R%i: %s WARNING %s does not exist: on "
                    "attempt %i. Maybe someone moved the file?"
@@ -825,8 +856,8 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
                 statedb.execute("INSERT INTO FILECPY (FILENAME, CHUNKS) VALUES (?,?)",
                            (filename, i))
             statedb.execute("DELETE FROM FILECPY WHERE ID = ?", (idx,))
-            copyremains += chunks-1
-            md5remains += chunks-1
+            COPYREMAINS += chunks-1
+            MD5REMAINS += chunks-1
         if VERBOSE:
             stripetxt = ""
             if LSTRIPE or FORCESTRIPE:
@@ -838,7 +869,7 @@ def processCopy(statedb, md5sum, idx, workerrank, status, size, speed, stripesta
                     stripetxt = "(small file: ignored striping)"
             print ("R%i: %s Large file %s ; copying in %i chunks." 
                    %(workerrank, filename, stripetxt, chunks))
-    return(copyremains, md5remains)
+    return()
 
 def ShutdownWorkers(starttime):
     """Tell workers we have no more work for them and collate the stats"""
@@ -848,7 +879,8 @@ def ShutdownWorkers(starttime):
         print "R0: Sending SHUTDOWN to workers"
 
     for r in range(1, workers):
-        comm.send("SHUTDOWN", dest=r, tag=1)
+        msg = ("SHUTDOWN",())
+        comm.send(msg, dest=r, tag=1)
         if VERBOSE:
             print "rank %i shutdown" % r
 
@@ -1200,12 +1232,14 @@ try:
     DUMPDB = args.K     # Checkpoint to this directory.
     DUMPINTERVAL = args.Km * 60 # Checkpoint period
     CHECKPOINTNOW = False
+    COPYREMAINS = 0 # remaining number of items to copy.
+    MD5REMAINS = 0 # remaining number of items to md5.
     sourcedir = args.SOURCE.rstrip(os.path.sep) # source
     destdir = args.DEST.rstrip(os.path.sep)  # destination
     glob = args.g    # only copy files matching glob
 
     # 100MB
-    CHUNKSIZE = 1024 * 1024 * 500
+    CHUNKSIZE = 1024 * 1024 * 50
 
     # Set the final state of process
     if MD5SUM:
