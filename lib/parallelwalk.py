@@ -1,14 +1,20 @@
+# Copyright Genome Research Ltd
+# Author gmpc@sanger.ac.uk
 from mpi4py import MPI
 import os
 import random
 import stat
 import readdir
-
+import time
+from collections import deque
 class ParallelWalk():
-    """This class implements a parallel directory walking algorithm. The 
-    class expects an MPI communicator as an argument.
+    """This class implements a parallel directory walking algorithm described 
+    by LaFon, Misra and Bringhurst
+    http://conferences.computer.org/sc/2012/papers/1000a015.pdf
+
+    The class expects an MPI communicator as an argument.
    
-    from walk import parallelwalk
+    from lib.parallelwalk import ParallelWalk
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
     walker = ParallelWalk(comm)
@@ -23,34 +29,44 @@ class ParallelWalk():
        seed = None
     results = walker.execute(seed)
 
-    As it stands, the walker will walk the directory tree and then exit. It will 
+    As it stands, the walker will walk the directory tree and then exit. It will
     return no data and perform no actions on file and directories it encounters.
 
+    The execute method should only be executed once; there is alot of undefined state
+    left in the walker once it has finished crawling.
+
     In order to customize its behaviour you should subclass ParallelWalk() and extend
-    the ProcessDir() and ProcessFile() methods. These methods are called on every 
+    the ProcessDir() and ProcessFile() methods. These methods are called on every
     directory and file the walker encounters.
 
-    If you want to return summary data from the walker, use the results 
-    attribute. results are gathered and returned as a list by the rank 0 
-    walker. The list contains the results from each MPI rank. If you wish to change 
+    The amount of work the ProcessDir() and ProcessFile() methods carry out should be
+    as small as possible to ensure efficient work balancing between the workers.
+    Tasks stuck in these functions will not be able to answer work requests from other
+    nodes.
+
+    If you want to return summary data from the walker, use the results
+    attribute. You can set results to a particular datatype by setting the results
+    parameter when you instantiate the class. By default results is None.
+
+    results are gathered and returned as a list by the rank 0
+    walker. The list contains the results from each MPI rank. If you wish to change
     this behaviour you can extend the gatherResults() method.
 
     The following example modified the walker to print out the name of each
-    file it encounters and count the total number of files
+    file it encounters and count the total number of files.
 
     class printfiles(ParallelWalk):
         def ProcessFile(self, filename)
             print filename
-
-            if self.results:
-               self.results += 1
-            else:
-               self.results = 1
+            self.results += 1
+         
+    walker  = printfile(comm, results=0)
+    listofresults = walker.Execute()
 
 
 """
-    def __init__(self, comm):
-        self.comm = comm
+    def __init__(self, comm, results=None):
+        self.comm = comm.Dup()
         self.rank = self.comm.Get_rank()
         self.workers = self.comm.size
         self.others = range(0, self.rank) + range(self.rank+1, self.workers)
@@ -59,9 +75,10 @@ class ParallelWalk():
         self.token = False
         self.first = True
         self.workrequest = False
-        self.items = []
-        self.results = None
+        self.items = deque()
+        self.results = results
         self.finished = False
+
     
     def ProcessDir(self, directoryname):
         """This method is a stub called for each directory the walker 
@@ -93,8 +110,8 @@ class ParallelWalk():
         # 1 = work item
         # 2 = token
         # 3 = Shutdown message
+        status = MPI.Status()
         while self.comm.Iprobe(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG):
-            status = MPI.Status()
             request = self.comm.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, 
                                 status=status)
             source = status.source
@@ -106,8 +123,9 @@ class ParallelWalk():
                     split = random.randrange(1, numitems)
     #            or split list in half
     #                split = numitems / 2
-                    senditems = self.items[:split]
-                    self.items = self.items[split:]
+                    senditems = list(self.items)[:split]
+                    remainingitems = list(self.items)[split:]
+                    self.items = deque(remainingitems)
                     self.comm.send(senditems, dest=source, tag=1)
                     if source < self.rank:
                         self.colour = "Black"
@@ -117,7 +135,7 @@ class ParallelWalk():
             if tag == 1:
                 self.mpirequest.wait()
                 if request != "NoWork":
-                    self.items += request
+                    self.items.extendleft(request)
                 self.workrequest = False
 
             if tag == 2:
@@ -150,19 +168,19 @@ class ParallelWalk():
                 for node in readdir.readdir(filename):
                     if not node.d_name in (".",".."):
                         fullname = os.path.join(filename, node.d_name)
-                        self.items.append((fullname, node.d_type))
+                        self.items.appendleft((fullname, node.d_type))
             # Call the processing functions on the directory or file.
                 self.ProcessDir(filename)
             else:
                 self.ProcessFile(filename)
-        except OSError:
-            print "Error accessing %s" % filename
+        except OSError as error:
+            print "cannot access `%s':" % filename,
+            print os.strerror(error.errno)
         return()
 
     def _AskForWork(self):
         """Send a work request to a random peer."""
         target = random.choice(self.others)
-        #FIXME: this will deadlock; need isend.
         self.mpirequest = self.comm.isend("Hungry", dest=target, tag=0)
         self.workrequest = True
 
@@ -212,8 +230,11 @@ class ParallelWalk():
         data = self.comm.gather(self.results, root=0)
         return(data)
 
+    def _tidy(self):
+        self.comm.Free()
+
     def Execute(self, seed):
-        """This method starts the walkers. The rank 0 MPI walker take a seed parameter,
+        """This method starts the walkers. The rank 0 MPI walker takes a seed parameter,
         which is the name of the first directory to walk.
 
         The rank 0 walker will return a list containing the results attributes for all of
@@ -222,10 +243,9 @@ class ParallelWalk():
         # Initialize the rank0 walker with the seed directory.
         # TODO: Be able to take multiple seeds
         if self.rank == 0:
-            self.items = [(seed, 4)]
+            self.items.append((seed, 4))
             self.token = "White"
         else:
-            self.items = []
             self.token = False
 
         # main loop
@@ -246,4 +266,5 @@ class ParallelWalk():
                 self._CheckForTermination()
         # Gather the summary data from other ranks and then exit.
         data = self.gatherResults()
+        self._tidy()
         return(data)

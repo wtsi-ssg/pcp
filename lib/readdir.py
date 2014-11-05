@@ -1,3 +1,5 @@
+#Copyright Genome Research Ltd
+# Author gmpc@sanger.ac.uk
 import ctypes
 import os
 """
@@ -37,20 +39,15 @@ class dirent(ctypes.Structure):
     """This is a python version of the C dirent structure returned by readdir.
     See the readdir manpage for details of the structure.
     """
-    def __init__(self):
-        ino_t = None
-        off_t = None
-        d_reclen = None
-        d_type = None
-        d_name = None
-
-    def fromC(self, cdirent):
-        """Sets the python dirent attributes from a C dirent struct."""
+    def __init__(self, cdirent=None):
         attributes = ["ino_t", "off_t", "d_reclen",
                       "d_type", "d_name"]
+
         for a in attributes:
-            setattr(self, a, getattr(cdirent, a))
-                    
+            if cdirent:
+                setattr(self, a, getattr(cdirent, a))
+            else:
+                setattr(self, a, None)
 
 def readdir(directory):
     """Calls readdir on a directory and returns a list of dirent objects.
@@ -65,8 +62,7 @@ def readdir(directory):
             p = _readdir(dirp)
             if not p:
                 break
-            d = dirent()
-            d.fromC(p.contents)
+            d = dirent(p.contents)
             entries.append(d)
     _closedir(dirp)
     return (entries)
