@@ -60,7 +60,7 @@ def build_liblustre():
         print "Using system liblustreapi.so from %s" % liblocation
         return()
     # if we have a copy our lib directory, leave it alone.
-    if os.path.exists("lib/liblustreapi.so"):
+    if os.path.exists("pcplib/liblustreapi.so"):
         print "Lustre library already built."
         return()
 
@@ -87,7 +87,7 @@ def build_liblustre():
     # Copy shared library into the dist tree.
     if have_sharedlib:
         print "Using liblustreapi.so from %s" %location
-        shutil.copy(liblustre_shared,"lib/liblustreapi.so")
+        shutil.copy(liblustre_shared,"pcplib/liblustreapi.so")
     # static lib needs converting to a .so
     if have_staticlib:
         print "Found liblustreapi.a in %s" % location
@@ -126,7 +126,7 @@ def convert_liblustre(lib_location):
         exit(1)
 
     p = subprocess.Popen(["gcc","-shared","liblustreapi.o",
-                          "-o","lib/liblustreapi.so"],
+                          "-o","pcplib/liblustreapi.so"],
                          stdout=subprocess.PIPE)
     stdout = p.communicate()[0]
     if p.returncode != 0:
@@ -134,7 +134,7 @@ def convert_liblustre(lib_location):
         exit(1)
 
     try:
-        lustre = ctypes.CDLL("lib/liblustreapi.so")
+        lustre = ctypes.CDLL("pcplib/liblustreapi.so")
         funptr = lustre.llapi_file_create
 
     except OSError, AttributeError:
@@ -168,7 +168,7 @@ if liblocation:
     print "Using system liblustreapi.so from %s" % liblocation
     lustre_packagedata = {}
 else:
-    lustre_packagedata = {"lustre": ["liblustreapi.so"]}
+    lustre_packagedata = {"pcplib": ["liblustreapi.so"]}
 
 setup(name = "pcp",
       cmdclass={"build": mybuild_py, 
@@ -179,6 +179,6 @@ setup(name = "pcp",
       author = "Guy Coates",
       author_email = "gmpc@sanger.ac.uk",
       scripts = ["pcp"],
-      packages=["lib"],
+      packages=["pcplib"],
       package_data = lustre_packagedata,
 )
