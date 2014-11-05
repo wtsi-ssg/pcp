@@ -713,7 +713,7 @@ def processMD5(statedb, payload):
                        " md5sum  mismatch (%s:%s). Re-queuing copy %i."
                        % (workerrank, timestamp(), filename, srcmd5, md5sum, attempt))
                 # TODO: Save corrupt segments of files.
-                if chunks < 0:
+                if chunk < 0:
                     corruptfile = destfile+"_CORRUPTED_%i" %attempt
                     destfile = mungePath(sourcedir, destdir, filename)
                     print ("R%i: %s Renaming corrupt file as %s for later analysis." 
