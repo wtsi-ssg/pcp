@@ -13,8 +13,8 @@ which do the copy."""
 # This program is released under GNU Public License V2 (GPLv2)
 
 
-#import rpdb2
-#rpdb2.start_embedded_debugger(XXXX, fAllowRemote=True,timeout=1)
+import rpdb2
+rpdb2.start_embedded_debugger("XXXX", fAllowRemote=True,timeout=10)
 
 import argparse
 import hashlib
@@ -31,8 +31,8 @@ import math
 import signal
 import gzip
 
-from lib import fastwalk
-from lib import lustreapi
+from pcplib import fastwalk
+from pcplib import lustreapi
 from collections import deque
 from mpi4py import MPI
 import pkg_resources
@@ -857,7 +857,9 @@ def processCopy(statedb, payload):
                            (filename, i))
             statedb.execute("DELETE FROM FILECPY WHERE ID = ?", (idx,))
             COPYREMAINS += chunks-1
-            MD5REMAINS += chunks-1
+            if MD5SUM:
+                MD5REMAINS += chunks-1
+
         if VERBOSE:
             stripetxt = ""
             if LSTRIPE or FORCESTRIPE:
@@ -1030,16 +1032,14 @@ def copyFile (src, dst, chunk):
         if size > CHUNKSIZE:
             # We've found a large file
             if chunk == -1:
-                # Set the striping, and then create the sparse file
-                # to fill in later.
                 if LSTRIPE or FORCESTRIPE:
                     stripestatus = createstripefile(src, dst, size)
-                    outfile = open(dst,"wb")
-                    outfile.truncate(size)
-                    outfile.close()
-                    return(size,0,0,stripestatus,6)
-                # if we are a chunk we skip stripe setting as it has already 
-                # been done
+                # Create a spare file to fill in later.
+                outfile = open(dst, "wb")
+                outfile.truncate(size)
+                outfile.close()
+                return(size, 0, 0, stripestatus, 6)
+
         else:
             if LSTRIPE or FORCESTRIPE:
                 stripestatus = createstripefile(src, dst, size)
@@ -1047,6 +1047,7 @@ def copyFile (src, dst, chunk):
 
         if DRYRUN:
             md5sum = "DEADBEAFdeadbeafDEADBEAFdeadbeaf"
+            bytescopied = 0
         else:
             if PRESERVE:
                 md5sum, bytescopied = md5copy(src, dst, blksize, MD5SUM, chunk)
@@ -1184,8 +1185,6 @@ workers = comm.size
 hostname = os.uname()[1]
 
 STARTEDCOPY = False  # flag to see whether we can start checkpointing.
-    # Older openMPIs are buggy
-checkVersion()
 signal.signal(signal.SIGUSR1, handler)
 try:
     if rank == 0:
@@ -1194,6 +1193,9 @@ try:
         timeout = args.d # dead worker timeout
         # If we are a restored job, read in our arguments
         # from the restoredb instead.
+        
+        # Older openMPIs are buggy
+        checkVersion()
         
         if workers < 2:
             print ("ERROR: Only %i processes running. Did you invoke me via"
