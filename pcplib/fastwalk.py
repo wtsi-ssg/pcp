@@ -1,3 +1,6 @@
+# Copyright (c) Genome Research Ltd 2014
+# Author Guy Coates <gmpc@sanger.ac.uk>
+# This program is released under the GNU Public License V2 or later (GPLV2+)
 import os
 import readdir
 import stat

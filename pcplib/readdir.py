@@ -1,5 +1,7 @@
 #Copyright Genome Research Ltd
 # Author gmpc@sanger.ac.uk
+# This program is released under the GNU Public License V2 or later (GPLV2+)
+
 import ctypes
 import os
 """
