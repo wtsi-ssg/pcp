@@ -60,7 +60,6 @@ class dirent(ctypes.Structure):
                 setattr(self, a, getattr(cdirent, a))
             else:
                 setattr(self, a, None)
-    
 
 def readdir(directory):
     """Calls readdir on a directory and returns a list of dirent objects.
