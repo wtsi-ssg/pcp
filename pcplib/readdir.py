@@ -41,6 +41,16 @@ class dirent(ctypes.Structure):
     """This is a python version of the C dirent structure returned by readdir.
     See the readdir manpage for details of the structure.
     """
+    DT_UNKNOWN = 0
+    DT_FIFO    = 1
+    DT_CHR     = 2
+    DT_DIR     = 3
+    DT_BLK     = 6
+    DT_REG     = 8
+    DT_LNK     = 10
+    DT_SOCK    = 12
+    DT_WHT     = 14
+
     def __init__(self, cdirent=None):
         attributes = ["ino_t", "off_t", "d_reclen",
                       "d_type", "d_name"]
@@ -50,6 +60,7 @@ class dirent(ctypes.Structure):
                 setattr(self, a, getattr(cdirent, a))
             else:
                 setattr(self, a, None)
+    
 
 def readdir(directory):
     """Calls readdir on a directory and returns a list of dirent objects.

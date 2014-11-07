@@ -25,15 +25,15 @@ def fastwalk (sourcedir, onerror=None, topdown=True):
         filetype = entry.d_type
     
         if not name in (".", ".."):
-            if filetype == 0:
+            if filetype == readdir.dirent.DT_UNKNOWN:
                 fullname = os.path.join(sourcedir, name)
                 mode = os.lstat(fullname).st_mode
                 if stat.S_ISDIR(mode):
-                    filetype = 4
+                    filetype = readdir.dirent.DT_DIR
                 else:
-                    filetype = 8
+                    filetype = readdir.dirent.DT_REG
 
-            if filetype == 4:
+            if filetype == readdir.dirent.DT_DIR:
                 dirlist.append(name)
             else:
                 filelist.append(name)
