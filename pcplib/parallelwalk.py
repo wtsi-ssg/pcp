@@ -159,13 +159,13 @@ class ParallelWalk():
             if filetype == 0:
                 s = os.lstat(filename)
                 if stat.S_ISDIR(s.st_mode):
-                    filetype = 4
+                    filetype = readdir.dirent.DT_DIR
                 else:
-                    filetype = 8
+                    filetype = readdir.dirent.DT_REG
 
             # If we a directory, enumerate its contents and add them to the list of nodes
             # to be processed.
-            if filetype == 4:
+            if filetype == readdir.dirent.DT_DIR:
                 for node in readdir.readdir(filename):
                     if not node.d_name in (".",".."):
                         fullname = os.path.join(filename, node.d_name)
