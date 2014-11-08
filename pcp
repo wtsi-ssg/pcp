@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 """ This program copies a directory tree in parallel.
 
 Algorithm:
