@@ -13,8 +13,8 @@ which do the copy."""
 # This program is released under GNU Public License V2 (GPLv2)
 
 
-import rpdb2
-rpdb2.start_embedded_debugger("XXXX", fAllowRemote=True,timeout=10)
+#import rpdb2
+#rpdb2.start_embedded_debugger("XXXX", fAllowRemote=True,timeout=10)
 
 import argparse
 import hashlib
