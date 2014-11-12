@@ -75,11 +75,11 @@ pcp has a number of useful options; use pcp -h to see a description.
 Chunking
 --------
 
-pcp will split files up into 100MB chunks, which can then be copied in parallel.
-Files smaller than the chunk size will be copied in one go. You can alter
-the chunk size with the -b flag. The size is in megabytes. For optimal performance
-the chunk size should be a whole multiple of the lustre stripe size (typically 1MB) 
-and lustre block size (typically 2MB).
+pcp will split files up into 100MB chunks, which can then be copied in 
+parallel. Files smaller than the chunk size will be copied in one go. You can 
+alter the chunk size with the -b flag. The size is in megabytes. For optimal 
+performance the chunk size should be a whole multiple of the lustre stripe size
+(typically 1MB) and lustre block size (typically 2MB).
 
 
 Checksum
