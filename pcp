@@ -173,6 +173,10 @@ machines as possible to prevent local network bottlenecks.
     parser.add_argument("SOURCE", help="source directory", nargs="?")
     parser.add_argument("DEST", help="destination directory", nargs="?")
 
+    parser.add_argument("-b", 
+                        help="Copy files larger than C Mbytes in C Mbyte chunks",
+                        default=50, type=int, metavar="C")
+
     parser.add_argument("-c", help="verify copy with checksum", default=False,
                         action="store_true")
     parser.add_argument("-d", help="dead worker timeout (seconds)", default=10,
@@ -279,7 +283,6 @@ def sanitycheck(sourcedir, destdir):
                        " %s is not a lustre directory.") % sourcedir
                 print "Exiting."
                 Abort()
-
 
 def scantree(sourcedir, statedb):
     """Scans sourcedir recursively and returns a list of filestate objects and
@@ -869,7 +872,7 @@ def processCopy(statedb, payload):
                     stripetxt = "(unstriped)"
                 elif stripestatus == -1:
                     stripetxt = "(small file: ignored striping)"
-            print ("R%i: %s Large file %s ; copying in %i chunks." 
+            print ("R%i: %s Large file %s: copying in %i chunks." 
                    %(workerrank, filename, stripetxt, chunks))
     return()
 
@@ -1240,8 +1243,7 @@ try:
     destdir = args.DEST.rstrip(os.path.sep)  # destination
     glob = args.g    # only copy files matching glob
 
-    # 100MB
-    CHUNKSIZE = 1024 * 1024 * 50
+    CHUNKSIZE = 1024 * 1024 * args.b
 
     # Set the final state of process
     if MD5SUM:
@@ -1263,6 +1265,7 @@ try:
             print "Will checkpoint every %i minutes to %s" %(DUMPINTERVAL, DUMPDB)
         if LSTRIPE:
             print "Will copy lustre stripe information."
+        print "Files larger than %i Mbytes will be copied in parallel chunks." %args.b
         if FORCESTRIPE:
             print "Will force stripe all files."
         if (LSTRIPE or FORCESTRIPE) and NODIRSTRIPE:
