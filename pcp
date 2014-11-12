@@ -228,6 +228,10 @@ machines as possible to prevent local network bottlenecks.
         
     args = parser.parse_args()
 
+    # setting blocksize = 0 will disable chunk copying.
+    if args.b == 0:
+        args.b = INFINITY
+
     if not args.SOURCE and  not args.R:
         print "You must specify a source directory!"
         parser.print_help()
@@ -1186,7 +1190,7 @@ comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 workers = comm.size
 hostname = os.uname()[1]
-
+INFINITY = float("inf")
 STARTEDCOPY = False  # flag to see whether we can start checkpointing.
 signal.signal(signal.SIGUSR1, handler)
 try:
@@ -1265,7 +1269,12 @@ try:
             print "Will checkpoint every %i minutes to %s" %(DUMPINTERVAL, DUMPDB)
         if LSTRIPE:
             print "Will copy lustre stripe information."
-        print "Files larger than %i Mbytes will be copied in parallel chunks." %args.b
+
+        if args.b < INFINITY:
+            print "Files larger than %i Mbytes will be copied in parallel chunks." %args.b
+        else:
+            print "Chunk copying disabled: files will be copied in one go."
+
         if FORCESTRIPE:
             print "Will force stripe all files."
         if (LSTRIPE or FORCESTRIPE) and NODIRSTRIPE:

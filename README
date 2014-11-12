@@ -81,6 +81,8 @@ alter the chunk size with the -b flag. The size is in megabytes. For optimal
 performance the chunk size should be a whole multiple of the lustre stripe size
 (typically 1MB) and lustre block size (typically 2MB).
 
+You can disable the chunk copy feature by setting the chunk size to 0.
+
 
 Checksum
 --------
