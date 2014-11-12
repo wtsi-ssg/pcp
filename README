@@ -71,13 +71,28 @@ parallel.
 
 pcp has a number of useful options; use pcp -h to see a description.
 
+
+Chunking
+--------
+
+pcp will split files up into 100MB chunks, which can then be copied in parallel.
+Files smaller than the chunk size will be copied in one go. You can alter
+the chunk size with the -b flag. The size is in megabytes. For optimal performance
+the chunk size should be a whole multiple of the lustre stripe size (typically 1MB) 
+and lustre block size (typically 2MB).
+
+
 Checksum
 --------
 
 If run with the -c flag, pcp will md5 checksum files after they are copied.
-In order to minimize the risk of checksumming cached data rather than data on 
+In order to minimize the risk of checksumming cached data, rather than data on 
 disk, pcp runs the md5 calculation on a different MPI rank to the one that did 
-the copy and uses posix_fadvise to tall the kernel not to cache files.
+the copy and uses posix_fadvise to tell the kernel not to cache files.
+
+If a file was copied in chunks, the md5 checksum reported is for the individual
+chunk, not the whole file.
+
 
 lustre striping
 ---------------
