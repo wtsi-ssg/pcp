@@ -170,7 +170,7 @@ machines as possible to prevent local network bottlenecks.
 
     parser.add_argument("-b", 
                         help="Copy files larger than C Mbytes in C Mbyte chunks",
-                        default=50, type=int, metavar="C")
+                        default=500, type=int, metavar="C")
 
     parser.add_argument("-c", help="verify copy with checksum", default=False,
                         action="store_true")
