@@ -31,7 +31,7 @@ import math
 import signal
 import gzip
 
-from pcplib import fastwalk
+from pcplib import parallelwalk
 from pcplib import lustreapi
 from collections import deque
 from mpi4py import MPI
@@ -101,11 +101,6 @@ ATTEMPTS INTEGER DEFAULT 0,
 LASTRANK INTEGER DEFAULT 0)""")
     filedb.execute("""CREATE INDEX COPY_IDX ON FILECPY(STATE, LASTRANK)""")
     filedb.execute("""CREATE INDEX MD5_IDX ON FILECPY(STATE, SIZE, LASTRANK)""")
-    filedb.execute("""CREATE TABLE DIRLIST (
-ID INTEGER PRIMARY KEY AUTOINCREMENT,
-DIRNAME TEXT,
-MTIME INTEGER,
-ATIME INTEGER)""")
 
     # Table to hold program arguments
     filedb.execute("""CREATE TABLE ARGUMENTS(
@@ -288,35 +283,39 @@ def sanitycheck(sourcedir, destdir):
                 print "Exiting."
                 Abort()
 
-def scantree(sourcedir, statedb):
-    """Scans sourcedir recursively and returns a list of filestate objects and
-    a list of directories."""
+def scantree(sourcedir, destdir, statedb):
+    """walk the src file tree, create the destination directories and put the
+    files to be copied into the database."""
+    totaldirs = 0
 
-    print "R%i: Scanning list of files to copy..." % (rank)
-    if not  os.path.isdir(sourcedir):
-        print "R%i: Error: %s not a directory" % (rank, sourcedir)
-        Abort()
-    startime = time.time()
-    statedb.execute("""INSERT INTO DIRLIST (DIRNAME) VALUES(?)""",
-                    (sourcedir,))
-    for source, dirs, files in fastwalk.fastwalk(sourcedir):
-        dirlist = [(os.path.join(source, d),) for d in dirs ]
-        statedb.executemany("""INSERT INTO DIRLIST (DIRNAME) VALUES (?)""",
-                            dirlist)
-        fullpath = [ (os.path.join(source, f),) for f in files ]
-        statedb.executemany("""INSERT INTO FILECPY (FILENAME) VALUES (?)""",
-                            fullpath)
+    if rank == 0:
+        startime = time.time()
+        if not  os.path.isdir(sourcedir):
+            print "R%i: Error: %s not a directory" % (rank, sourcedir)
+            Abort()
 
-    endtime = time.time()
-    walltime = endtime - startime
-    totalfiles = statedb.execute("SELECT COUNT(*) FROM FILECPY").fetchone()[0]
-    totaldirs = statedb.execute("SELECT COUNT(*) FROM DIRLIST").fetchone()[0]
-    rate = (totalfiles + totaldirs) / walltime
-    walltime = time.strftime("%H hrs %M mins %S secs",
-                             time.gmtime(walltime))
-    print ("R%i: Scan Done. Did %i files, %i dirs in %s"
-           " (%.0f items/sec)."
-        % (rank, totalfiles, totaldirs, walltime, rate))
+    # results are ([directories][files])
+    walker = copydirtree(comm, results=([],[]))
+    listofpaths = walker.Execute(sourcedir)
+
+    if rank == 0:
+        for l in listofpaths:
+            for f in l[1]:
+                statedb.execute("""INSERT INTO FILECPY (FILENAME) VALUES (?)""",
+                            (f,))
+
+            totaldirs += len(l[0])
+            
+        endtime = time.time()
+        walltime = endtime - startime
+        totalfiles = statedb.execute("SELECT COUNT(*) FROM FILECPY").fetchone()[0]
+
+        rate = (totalfiles + totaldirs) / walltime
+        walltime = time.strftime("%H hrs %M mins %S secs",
+                                     time.gmtime(walltime))
+        print ("Scan Done. Did %i files, %i dirs in %s"
+               " (%.0f items/sec)."
+               % (totalfiles, totaldirs, walltime, rate))
     return()
 
 def fadviseSeqNoCache(fileD):
@@ -527,31 +526,6 @@ def ConsumeWork(sourcedir, destdir):
                  copytimer.read(), md5timer.read()), root=0)
     
     return(0)
-
-def copyDirectories(sourcedir, destdir, statedb):
-    """Copy a list of directories in the statedb from sourcedir to destdir"""
-    global WARNINGS
-    for idx, d in statedb.execute("SELECT ID, DIRNAME FROM DIRLIST"):
-        destination = mungePath(sourcedir, destdir, d)
-        if DRYRUN:
-            if VERBOSE:
-                print "R%i: %s mkdir %s" % (rank, timestamp(), destination)
-        else:
-            i = 0
-            while i < MAXTRIES:
-                try:
-                    createDir(d, destination, statedb, idx)
-                    break
-                except IOError, error:
-                    i += 1
-                    print "R%i %s WARNING: mkdir error on %s attempt %i" \
-                        % (rank, timestamp(), destdir, i)
-                    WARNINGS += 1
-                    if i == MAXTRIES:
-                        print "R%i %s ERROR: Max number of retries on %s exceeded" \
-                            % (rank, timestamp(), sourcedir)
-                        raise
-
 
 def checkAlive(rank, workers, timeout):
     """Quirky farm nodes can cause the MPI runtime to lock up during the task
@@ -934,14 +908,12 @@ def ShutdownWorkers(starttime):
                           time.gmtime(totalelapsedtime)))
     print "Warnings %i" % WARNINGS
 
-def createDir(sourcedir, destdir, statedb, idx):
+def copyDir(sourcedir, destdir):
     """Create destdir, setting stripe attributes to be the
-    same as sourcedir. Timestamps are save in the statedb for use later."""
+    same as sourcedir."""
     global WARNINGS
 
     # Don't worry is the destination directory already exists
-    if VERBOSE:
-        print "R%i: %s mkdir %s" % (rank, timestamp(), destdir),
 
     try:
         os.mkdir(destdir)
@@ -952,8 +924,6 @@ def createDir(sourcedir, destdir, statedb, idx):
     if PRESERVE:
         try:
             stat = safestat(sourcedir)
-            statedb.execute("UPDATE DIRLIST SET ATIME = ? , MTIME = ? WHERE ID =?",
-                            (stat.st_atime, stat.st_mtime, idx))
             os.chmod(destdir, stat.st_mode)
             os.chown(destdir, stat.st_uid, stat.st_gid)
             # Don't worry if we can't set the permissions/uid to be the same
@@ -971,16 +941,10 @@ def createDir(sourcedir, destdir, statedb, idx):
             if LSTRIPE:
                 layout = lustreapi.getstripe(sourcedir)
             if (LSTRIPE and layout.isstriped()) or ( FORCESTRIPE and not NODIRSTRIPE ):
-                if VERBOSE:
-                    print "(striped)"
                 lustreapi.setstripe(destdir, stripecount=-1)
             else:
-                if VERBOSE:
-                    print "(non striped)"
                 lustreapi.setstripe(destdir, stripecount=1)
-        else:
-            if VERBOSE:
-                print ""
+
     except IOError, error:
         if error.errno != 13:
             raise
@@ -989,10 +953,10 @@ def createDir(sourcedir, destdir, statedb, idx):
                 % (rank, destdir)
 
 
-def fixupDirTimeStamp(sourcedir, destdir, statedb):
-    for dirname, atime, mtime in statedb.execute("""SELECT DIRNAME, ATIME, MTIME  FROM DIRLIST"""):
-        destination = mungePath(sourcedir, destdir, dirname)
-        os.utime(destination, (atime, mtime))
+def fixupDirTimeStamp(sourcedir):
+    walker = fixtimestamp(comm)
+    walker.Execute(sourcedir)
+
 
 def mungePath(src, dst, f):
     """Convert the sourcepath to the desinationpath"""
@@ -1042,9 +1006,12 @@ def copyFile (src, dst, chunk):
                 if LSTRIPE or FORCESTRIPE:
                     stripestatus = createstripefile(src, dst, size)
                 # Create a spare file to fill in later.
-                outfile = open(dst, "wb")
-                outfile.truncate(size)
-                outfile.close()
+
+                if not DRYRUN:
+                    outfile = open(dst, "wb")
+                    outfile.truncate(size)
+                    outfile.close()
+
                 return(size, 0, 0, stripestatus, 6)
 
         else:
@@ -1169,6 +1136,28 @@ def distribArgs(args):
     args = comm.bcast(args, root=0)
     return(args)
 
+class copydirtree(parallelwalk.ParallelWalk):
+    """Walk the source directory tree in parallel, creating the destination tree
+    as we go. Return the list of files we encountered."""
+    def ProcessFile(self, filename):
+        self.results[1].append(filename)
+
+    def ProcessDir(self, directoryname):
+        newdir = mungePath(sourcedir, destdir, directoryname)
+        self.results[0].append(newdir)
+        if not DRYRUN:
+            copyDir(directoryname, newdir)
+
+
+class fixtimestamp(parallelwalk.ParallelWalk):
+    """Walk the source directory tree and copy the timestamps to the 
+    destination tree."""
+    def ProcessDir(self, directoryname):
+        stat = safestat(directoryname)
+        newdir = mungePath(sourcedir, destdir, directoryname)
+        os.utime(newdir, (stat.st_atime, stat.st_mtime))
+        
+
 class MPIargparse(argparse.ArgumentParser):
     """Subclass argparse so we can add a call to Abort, to tidy up MPI bits and pieces."""
     def error(self,message):
@@ -1223,6 +1212,7 @@ try:
     else:
         timeout = 0
         args = 0
+        statedb = None
 
     # Check the workers are alive and send them the runtime arguments.
     checkAlive(rank, workers, timeout)
@@ -1287,9 +1277,12 @@ try:
 
         sanitycheck(sourcedir, destdir)
         starttime = time.time()
+        print "Scanning directory structure..."
+    # All ranks take part in the scan
+    scantree(sourcedir, destdir, statedb)
 
+    if rank == 0:
         if not resumed:
-            scantree(sourcedir, statedb)
             if glob:
                 totalfiles = statedb.execute("SELECT COUNT(*) FROM FILECPY").fetchone()[0]
                 results = statedb.execute("DELETE FROM FILECPY WHERE NOT FILENAME GLOB ?",
@@ -1298,23 +1291,24 @@ try:
 
                 print "Will only copy files matching %s (%i of %i)" \
                     % (glob, matchingfiles, totalfiles)
-            print "R0: Copying directories..."
-            copyDirectories(sourcedir, destdir, statedb)
 
         STARTEDCOPY = True
         print "Copying files..."
         DispatchWork(statedb)
+        ShutdownWorkers(starttime)
+        
         if PRESERVE:
             print "R0: %s Setting directory timestamps..." %timestamp()
-            fixupDirTimeStamp(sourcedir, destdir, statedb)
+            fixupDirTimeStamp(sourcedir)
             print "RO: %s Done." %timestamp()
-        ShutdownWorkers(starttime)
         print "Master process done."
         exit(0)
 
     else:
         # file copy workers
         ConsumeWork(sourcedir, destdir)
+        if PRESERVE:
+            fixupDirTimeStamp(sourcedir)
         exit(0)
 
 # We need to call MPI ABORT in our exception handler,
