@@ -1,17 +1,26 @@
 #!/usr/bin/env python
-""" This program copies a directory tree in parallel.
-
-Algorithm:
-
-pcp implements a master-slave pattern. R0 is the master and R1...RX are the
-slaves. R0 scan the source directory tree and put files to be copied on a
-queue on the master. The master dispatches files in the queue to ranks R1..RX,
-which do the copy."""
 # Parallel cp program
 # Copyright (c) Genome Research Ltd 2012
 # Author Guy Coates <gmpc@sanger.ac.uk>
 # This program is released under GNU Public License V2 (GPLv2)
 
+""" This program copies a directory tree in parallel.
+
+Algorithm:
+
+pcp runs in two phases. Phase I is a parallel walk of the file tree, involving all
+MPI ranks in a peer-to-peer algorithm. The walk constructs the list of files to be 
+copied and creates the destination directory higherarcy.
+
+In phase II, the actual files are copied. Phase II uses a master-slave algorithm.
+R0 is the master and dispatches file copy instructions to the slaves (R1...Rn).
+Although slightly less efficient than the peer-to-peer algorithm in phase I,
+using master-slave simplifies the checkpoint/restore implementation.
+
+As stat is a relatively slow operation on lustre, the code jumps through some
+hoops to avoid doing stats during Phase I.
+
+"""
 
 #import rpdb2
 #rpdb2.start_embedded_debugger("XXXX", fAllowRemote=True,timeout=10)
