@@ -28,6 +28,7 @@ import ctypes
 import sqlite3
 import pickle
 import math
+import random
 import signal
 import gzip
 
@@ -92,6 +93,7 @@ def createDB():
     filedb.text_factory = str
     filedb.execute("""CREATE TABLE FILECPY(
 ID INTEGER PRIMARY KEY AUTOINCREMENT,
+SORTORDER INTEGER DEFAULT -1,
 FILENAME TEXT,
 STATE INTEGER DEFAULT 0,
 SRCMD5 TEXT,
@@ -99,9 +101,7 @@ SIZE INTEGER,
 CHUNKS INTEGER DEFAULT -1,
 ATTEMPTS INTEGER DEFAULT 0,
 LASTRANK INTEGER DEFAULT 0)""")
-    filedb.execute("""CREATE INDEX COPY_IDX ON FILECPY(STATE, LASTRANK)""")
-    filedb.execute("""CREATE INDEX MD5_IDX ON FILECPY(STATE, SIZE, LASTRANK)""")
-
+    filedb.execute("""CREATE INDEX COPY_IDX ON FILECPY(STATE, LASTRANK, SORTORDER)""")
     # Table to hold program arguments
     filedb.execute("""CREATE TABLE ARGUMENTS(
 ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -316,6 +316,10 @@ def scantree(sourcedir, destdir, statedb):
         print ("Scan Done. Did %i files, %i dirs in %s"
                " (%.0f items/sec)."
                % (totalfiles, totaldirs, walltime, rate))
+        # Shuffle rows. If we don't do this, chunks of files tend to be copied at
+        # the same time, causing hot OSTs in the case of unstriped files.
+        statedb.execute("""UPDATE FILECPY SET SORTORDER = ABS(RANDOM() % ?)""",
+                        (totalfiles,))
     return()
 
 def fadviseSeqNoCache(fileD):
@@ -564,6 +568,7 @@ def DispatchWork(statedb):
     global CHECKPOINTNOW
     global COPYREMAINS
     global MD5REMAINS
+    global TOTALROWS
 
     # Queue containing worker who are ready for work.
     idleworkers = deque()
@@ -572,6 +577,8 @@ def DispatchWork(statedb):
     if DUMPDB:
         cptimer = Timer()
         cptimer.start()
+    TOTALROWS = statedb.execute \
+        ("""SELECT COUNT(*) FROM FILECPY""").fetchone()[0]
 
     COPYREMAINS = statedb.execute \
         ("""SELECT COUNT(*) FROM FILECPY WHERE STATE == 0""").fetchone()[0]
@@ -628,23 +635,20 @@ def DispatchWork(statedb):
                 lastrank = -1
             else:
                 lastrank = worker
-
-            task = statedb.execute("""SELECT * FROM FILECPY WHERE STATE == 0 AND
-                                  LASTRANK <> ? LIMIT 1""",(lastrank, )).fetchone()
+            task = statedb.execute("""SELECT FILENAME, ID, CHUNKS FROM FILECPY WHERE STATE == 0 AND
+                                  LASTRANK <> ? ORDER BY SORTORDER LIMIT 1""",(lastrank, )).fetchone()
             if task:
-                statedb.execute("""UPDATE FILECPY SET STATE = 1 WHERE ID = ?""",(task[0],))
-                msg = ("COPY", (task[1], task[0], task[5]))
+                statedb.execute("""UPDATE FILECPY SET STATE = 1 WHERE ID = ?""",(task[1],))
+                msg = ("COPY", (task[0], task[1], task[2]))
                 comm.send(msg, dest=worker, tag=1)
                 continue
 
             if MD5SUM:
-                # We now know the size, and can improve load balancing between workers by
-                # selecting the largest files first.
-                task = statedb.execute("""SELECT * FROM FILECPY WHERE STATE == 2 AND
-                       LASTRANK <> ? ORDER BY SIZE DESC LIMIT 1""",(lastrank, )).fetchone()
+                task = statedb.execute("""SELECT FILENAME, ID, CHUNKS FROM FILECPY WHERE STATE == 2 AND
+                       LASTRANK <> ? ORDER BY SORTORDER LIMIT 1""",(lastrank, )).fetchone()
                 if task:
-                    statedb.execute("""UPDATE FILECPY SET STATE = 3 WHERE ID = ?""",(task[0],))
-                    msg = ("MD5", (task[1], task[0], task[5]))
+                    statedb.execute("""UPDATE FILECPY SET STATE = 3 WHERE ID = ?""",(task[1],))
+                    msg = ("MD5", (task[0], task[1], task[2]))
                     comm.send(msg, dest=worker, tag=1)
                     continue
             # There is work, but not for this worker. Send to the back of the queue
@@ -726,7 +730,8 @@ def processCopy(statedb, payload):
     global WARNINGS
     global COPYREMAINS
     global MD5REMAINS
-
+    global TOTALROWS
+    
     md5sum = payload[0]
     idx = payload[1]
     workerrank = payload[2]
@@ -834,10 +839,12 @@ def processCopy(statedb, payload):
         chunks = int(math.ceil(size / float(CHUNKSIZE)))
         with statedb:
             for i in range(chunks):
-                statedb.execute("INSERT INTO FILECPY (FILENAME, CHUNKS) VALUES (?,?)",
-                           (filename, i))
+                sortid = random.randint(0, TOTALROWS + chunks)
+                statedb.execute("INSERT INTO FILECPY (FILENAME, SORTORDER, CHUNKS) VALUES (?,?,?)",
+                           (filename, sortid, i))
             statedb.execute("DELETE FROM FILECPY WHERE ID = ?", (idx,))
             COPYREMAINS += chunks-1
+            TOTALROWS += chunks
             if MD5SUM:
                 MD5REMAINS += chunks-1
 
@@ -1231,6 +1238,7 @@ try:
     DUMPDB = args.K     # Checkpoint to this directory.
     DUMPINTERVAL = args.Km * 60 # Checkpoint period
     CHECKPOINTNOW = False
+    TOTALROWS = 0 # The total number of files and chunks to be copied.
     COPYREMAINS = 0 # remaining number of items to copy.
     MD5REMAINS = 0 # remaining number of items to md5.
     sourcedir = args.SOURCE.rstrip(os.path.sep) # source
@@ -1278,8 +1286,10 @@ try:
         sanitycheck(sourcedir, destdir)
         starttime = time.time()
         print "Scanning directory structure..."
+
     # All ranks take part in the scan
-    scantree(sourcedir, destdir, statedb)
+    if not resumed:
+        scantree(sourcedir, destdir, statedb)
 
     if rank == 0:
         if not resumed:
