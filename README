@@ -71,6 +71,17 @@ parallel.
 
 pcp has a number of useful options; use pcp -h to see a description.
 
+The program runs in three phases:
+
+In phase I, the source directory tree is crawled, the destination source 
+tree is created and files are marked for copying depending on the runtime
+parameters (see below).
+
+In phase II, the files themselves are copied, and optionally checksummed.
+
+If the "preserve" option has been selected,  phase III runs and directory 
+timestamps are copied.
+
 
 Chunking
 --------
@@ -119,12 +130,22 @@ If -ld is specified, destination directories will not be striped. (The contents
 themselves may still be striped).
 
 
+Update copy
+-----------
+
+If run with the -u flag, pcp will only copy a file if the source file is
+newer than the destination file (mtime) or if the destination files does not
+exist.
+
+
 Checkpointing
 -------------
 
 pcp support serveral checkpointing methods. The checkpoint allows a copy,
-interrupted for any reason, to be restarted. Files which were in the process of
-being copied will be recopied in their entirety.
+interrupted for any reason, to be restarted. 
+
+Note that checkpoints will only be taken once the program has entered phase II
+(copy) stage.
 
 If you specify a dumpfile with -K, a checkpoint will be written every 60 
 minutes. The checkpoint period can be varied with the -Km option. If the 
@@ -140,8 +161,8 @@ To resume from checkpoint, start pcp with the -R <dumpfile> option. All pcp
 command line parameters will be taken from the dumpfile; any other command 
 line arguments you give to pcp will be ignored.
 
-Note that you can safely resume a checkpoint with a different number of 
-processes than the original.
+Note that you can safely resume a checkpoint using a different number of 
+MPI processes than the original.
 
 
 Other Useful Options
@@ -150,8 +171,8 @@ Other Useful Options
 A dead worker timeout can be specified with -d; if workers do not respond 
 within timeout seconds of the job starting, the job will terminate.
 
-If run with -p, pcp will attempt to preserve the ownership, permissions and 
-timestamps of the copied files.
+If run with -p (preserve), pcp will attempt to preserve the ownership, 
+permissions and timestamps of the copied files.
 
 
 Invocation
