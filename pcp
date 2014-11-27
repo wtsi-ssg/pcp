@@ -298,6 +298,7 @@ def scantree(sourcedir, destdir, statedb):
     """walk the src file tree, create the destination directories and put the
     files to be copied into the database."""
     totaldirs = 0
+    totalscanned = 0
 
     if rank == 0:
         startime = time.time()
@@ -305,8 +306,9 @@ def scantree(sourcedir, destdir, statedb):
             print "R%i: Error: %s not a directory" % (rank, sourcedir)
             Abort()
 
-    # results are ([directories][files])
-    walker = copydirtree(comm, results=([],[]))
+    # results are ([directories][files to be copied ][total files])
+    # FIXME: change to a proper data structure.
+    walker = copydirtree(comm, results=[[],[],0])
     listofpaths = walker.Execute(sourcedir)
 
     if rank == 0:
@@ -316,6 +318,7 @@ def scantree(sourcedir, destdir, statedb):
                             (f,))
 
             totaldirs += len(l[0])
+            totalscanned += l[2]
             
         endtime = time.time()
         walltime = endtime - startime
@@ -324,9 +327,10 @@ def scantree(sourcedir, destdir, statedb):
         rate = (totalfiles + totaldirs) / walltime
         walltime = time.strftime("%H hrs %M mins %S secs",
                                      time.gmtime(walltime))
-        print ("Phase I done: Did %i files, %i dirs in %s"
+        print ("Phase I done: Scanned %i files, %i dirs in %s"
                " (%.0f items/sec)."
-               % (totalfiles, totaldirs, walltime, rate))
+               % (totalscanned, totaldirs, walltime, rate))
+        print " %i files will be copied." %totalfiles
         # Shuffle rows. If we don't do this, chunks of files tend to be copied at
         # the same time, causing hot OSTs in the case of unstriped files.
         statedb.execute("""UPDATE FILECPY SET SORTORDER = ABS(RANDOM() % ?)""",
@@ -1159,6 +1163,7 @@ class copydirtree(parallelwalk.ParallelWalk):
     """Walk the source directory tree in parallel, creating the destination tree
     as we go. Return the list of files we encountered."""
     def ProcessFile(self, filename):
+        self.results[2] += 1
         if UPDATE:
             # check to see if the destination exists
             destination = mungePath(sourcedir, destdir, filename)
