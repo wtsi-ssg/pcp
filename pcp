@@ -936,7 +936,9 @@ def copyDir(sourcedir, destdir):
         os.mkdir(destdir)
     except OSError, error:
         if error.errno != 17:
-            raise
+            print "cannot create `%s':" % destdir,
+            print os.strerror(error.errno)
+            WARNINGS += 1
 
     if PRESERVE:
         try:
