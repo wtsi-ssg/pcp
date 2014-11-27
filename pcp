@@ -215,7 +215,8 @@ machines as possible to prevent local network bottlenecks.
                         help="Do not stripe diretories.", default=False,
                         action="store_true")
     parser.add_argument("-u",
-                        help="Copy only when the source file is newer than the destination file, or the destination file is missing.", default=False, action="store_true")
+                        help="Copy only when the source file is newer than the destination file,"
+                        " or the destination file is missing.", default=False, action="store_true")
 
     parser.add_argument("-R",
                         help=("Restart a copy from a checkpoint file DUMPFILE."),
@@ -834,7 +835,7 @@ def processCopy(statedb, payload):
                             LASTRANK = ? WHERE ID = ?""", 
                             (attempt, workerrank, idx))
             WARNINGS += 1
-            print ("R%i: %s WARNING: %s does not exist on"
+            print ("R%i: %s WARNING: %s No such file or directory"
                    " attempt %i. Retrying..."
                    % (workerrank, timestamp(), filename, attempt))
         else:
@@ -845,7 +846,7 @@ def processCopy(statedb, payload):
             COPYREMAINS -= 1
             MD5REMAINS -= 1
             WARNINGS += 1 
-            print ("R%i: %s WARNING %s does not exist: on "
+            print ("R%i: %s WARNING %s No such file or directory on "
                    "attempt %i. Maybe someone moved the file?"
                    " Skipping...") %(workerrank, timestamp(),
                                      filename, attempt)
