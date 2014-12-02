@@ -945,21 +945,6 @@ def copyDir(sourcedir, destdir):
             print os.strerror(error.errno)
             WARNINGS += 1
 
-    if PRESERVE:
-        try:
-            stat = safestat(sourcedir)
-            os.chmod(destdir, stat.st_mode)
-            os.chown(destdir, stat.st_uid, stat.st_gid)
-            # Don't worry if we can't set the permissions/uid to be the same
-            # as the previous side; we might be copying someone else's data.
-        except OSError, error:
-            if error.errno != 1:
-                raise
-            else:
-                print "R%i WARNING: Unable to set permissions on %s" \
-                    % (rank, destdir)
-                WARNINGS += 1
-
     try:
         if LSTRIPE or FORCESTRIPE:
             if LSTRIPE:
@@ -1193,10 +1178,23 @@ class fixtimestamp(parallelwalk.ParallelWalk):
     """Walk the source directory tree and copy the timestamps to the 
     destination tree."""
     def ProcessDir(self, directoryname):
+        global WARNINGS
         stat = safestat(directoryname)
         newdir = mungePath(sourcedir, destdir, directoryname)
         if not DRYRUN:
-            os.utime(newdir, (stat.st_atime, stat.st_mtime))
+            try:
+                os.chmod(newdir, stat.st_mode)
+                os.chown(newdir, stat.st_uid, stat.st_gid)
+                os.utime(newdir, (stat.st_atime, stat.st_mtime))
+
+            except OSError, error:
+                if error.errno != 1:
+                    raise
+                else:
+                    print "R%i WARNING: Unable to set permissions on %s" \
+                        % (rank, newdir)
+                    WARNINGS += 1
+
 
 class MPIargparse(argparse.ArgumentParser):
     """Subclass argparse so we can add a call to Abort, to tidy up MPI bits and pieces."""
