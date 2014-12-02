@@ -947,9 +947,8 @@ def copyDir(sourcedir, destdir):
 
     try:
         if LSTRIPE or FORCESTRIPE:
-            if LSTRIPE:
-                layout = lustreapi.getstripe(sourcedir)
-            if (LSTRIPE and layout.isstriped()) or ( FORCESTRIPE and not NODIRSTRIPE ):
+            layout = lustreapi.getstripe(sourcedir)
+            if ( layout.isstriped or FORCESTRIPE ) and not NODIRSTRIPE:
                 lustreapi.setstripe(destdir, stripecount=-1)
             else:
                 lustreapi.setstripe(destdir, stripecount=1)
