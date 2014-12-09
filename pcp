@@ -43,6 +43,7 @@ import gzip
 
 from pcplib import parallelwalk
 from pcplib import lustreapi
+from pcplib import statfs
 from collections import deque
 from mpi4py import MPI
 import pkg_resources
@@ -274,7 +275,6 @@ def sanitycheck(sourcedir, destdir):
     """Perform some sanity checks, including creating the destination
     directory if it does not exist and ensuring excessive parallelism is not
     used."""
-
     realsource = os.path.realpath(sourcedir)
     realdest = os.path.realpath(destdir)
     if realsource == realdest:
@@ -283,17 +283,29 @@ def sanitycheck(sourcedir, destdir):
         print
         Abort()
         
-    # If we are using lustre stripe options, check that the source and/or
-    # destination filesystems are lustre   
+    # If we are using lustre stripe options, check that the source and
+    # destination filesystems are lustre.
     if LSTRIPE:
-        try:
-            lustreapi.getstripe(sourcedir)
-        except IOError, error:
-            if error.errno == 25:
-                print ("ERROR: You have asked me to copy lustre striping attributes, but"
-                       " %s is not a lustre directory.") % sourcedir
-                print "Exiting."
-                Abort()
+        fstype = statfs.fstype(sourcedir)
+        if fstype != lustreapi.LUSTREMAGIC:
+            print ""
+            print ("ERROR: You have asked me to copy lustre striping attributes, but"
+                   " %s is not a lustre directory.") % sourcedir
+            print "Exiting."
+            Abort()
+    # The destination might not exist yet, so walk up the path until we find the
+    # mountpoint.
+    if LSTRIPE or FORCESTRIPE:
+        path = destdir
+        while not os.path.ismount(path):
+            path = os.path.dirname(path)
+        fstype = statfs.fstype(path)
+        if fstype != lustreapi.LUSTREMAGIC:
+            print ""
+            print ("ERROR: You have asked me to set lustre striping attributes, but"
+            "%s is not a lustre filesystem") % path
+            print "Exiting."
+            Abort()
 
 def scantree(sourcedir, destdir, statedb):
     """walk the src file tree, create the destination directories and put the

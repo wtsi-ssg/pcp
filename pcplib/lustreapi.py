@@ -16,7 +16,6 @@ ar -x liblustreapi.a
 gcc -shared -o liblustreapi.so *.o
 
 """
-
 import ctypes
 import ctypes.util
 import os
@@ -28,6 +27,7 @@ try:
 except pkg_resources.DistributionNotFound:
     __version__ = "UNRELEASED"
 
+LUSTREMAGIC = 0xbd00bd0
 
 liblocation = ctypes.util.find_library("lustreapi")
 # See if liblustreapi.so is in the same directory as the module

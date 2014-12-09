@@ -41,4 +41,4 @@ def fstype(path):
 
     data = _struct_statfs()
     _statfs(path, ctypes.byref(data))
-    return hex(data.f_type)
+    return data.f_type
