@@ -4,6 +4,7 @@
 import os
 import readdir
 import stat
+import safestat
 
 def fastwalk (sourcedir, onerror=None, topdown=True):
     """Improved version of os.walk: generates a tuple of (sourcedir,[dirs],
@@ -27,7 +28,7 @@ def fastwalk (sourcedir, onerror=None, topdown=True):
         if not name in (".", ".."):
             if filetype == readdir.dirent.DT_UNKNOWN:
                 fullname = os.path.join(sourcedir, name)
-                mode = os.lstat(fullname).st_mode
+                mode = safestat.safestat(fullname).st_mode
                 if stat.S_ISDIR(mode):
                     filetype = readdir.dirent.DT_DIR
                 else:

@@ -7,6 +7,7 @@ import random
 import stat
 import readdir
 import time
+import safestat
 from collections import deque
 class ParallelWalk():
     """This class implements a parallel directory walking algorithm described 
@@ -157,7 +158,7 @@ class ParallelWalk():
             # a file or a directory without doing any extra work. If it does not, we have
             # to do a stat.
             if filetype == 0:
-                s = os.lstat(filename)
+                s = safestat.safestat(filename)
                 if stat.S_ISDIR(s.st_mode):
                     filetype = readdir.dirent.DT_DIR
                 else:
