@@ -134,15 +134,16 @@ Update copy
 -----------
 
 If run with the -u flag, pcp will only copy a file if the source file is
-newer than the destination file (mtime) or if the destination files does not
-exist.
+newer than the destination file (mtime), or if the destination files does not
+exist. Note there are some potential pitfalls to using update copies (see
+below).
 
 
 Checkpointing
 -------------
 
-pcp support serveral checkpointing methods. The checkpoint allows a copy,
-interrupted for any reason, to be restarted. 
+pcp has checkpoint support. It allows a copy,interrupted for any reason, to be
+safely restarted.
 
 Note that checkpoints will only be taken once the program has entered phase II
 (copy) stage.
@@ -163,6 +164,24 @@ line arguments you give to pcp will be ignored.
 
 Note that you can safely resume a checkpoint using a different number of 
 MPI processes than the original.
+
+
+update copy, failures and checkpoints
+-------------------------------------
+
+It is only safe to run update copies after an initial file copy has completed
+sucessfully. You should NOT use an update copy to restart a file transfer if
+if the original copy has failed. pcp only uses files mtimes, and not file
+contents to decide whether a file needs updating. Any partially transferred
+files will be left as is and not re-copied.
+
+In this situation, you should restart the failed copy from a checkpoint
+instead. The checkpoint/restore process ensures that  partially transferred
+files are re-copied.
+
+It is also safe to restart a failed update copy from a checkpoint. However, any
+modifications made to the source tree after the initial copy was started will
+be ignored.
 
 
 Other Useful Options
