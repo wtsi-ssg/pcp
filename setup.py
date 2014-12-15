@@ -44,9 +44,13 @@ def update_version():
     else:
         try:
             from _version import __version__ as ver
+            print "Setting version from distribution."
         except ImportError:
-            ver = "UNKNOWN"
-        print "Setting version from distribution."
+            try:
+                ver = os.path.basename(os.getcwd()).split("-")[1]
+                print "Setting version from directory name."
+            except IndexError:
+                print "unable to determine version from directory name."
     print "version '%s'" % ver
     return (ver)
 
