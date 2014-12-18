@@ -52,9 +52,7 @@ class dirent(ctypes.Structure):
     DT_WHT     = 14
 
     def __init__(self, cdirent=None):
-        attributes = ["ino_t", "off_t", "d_reclen",
-                      "d_type", "d_name"]
-
+        attributes = [a[0] for a in _cdirent._fields_]
         for a in attributes:
             if cdirent:
                 setattr(self, a, getattr(cdirent, a))
