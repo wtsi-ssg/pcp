@@ -61,7 +61,8 @@ def build_liblustre():
     # See if we have a .so already installed in the system.
     liblocation = ctypes.util.find_library("lustreapi")
     if liblocation:
-        print "Using system liblustreapi.so from %s" % liblocation
+        print "Found a system liblustreapi.so."
+        print "Not packaging our own."
         return()
     # if we have a copy our lib directory, leave it alone.
     if os.path.exists("pcplib/liblustreapi.so"):
@@ -74,8 +75,8 @@ def build_liblustre():
     # Search user defined and system library locations until
     # we find one.
     lib_locations = ["/usr/lib","/lib"]
-    if liblustre_loc:
-        lib_locations.insert(0, liblustre_loc)
+    if LIBLUSTRE_LOC:
+        lib_locations.insert(0, LIBLUSTRE_LOC)
 
     for location in lib_locations:
         print "Looking for liblustreapi.[so|a] in %s" % location
@@ -98,21 +99,18 @@ def build_liblustre():
         convert_liblustre(location)
 
     if not ( have_staticlib or have_sharedlib ):
-        print "ERROR: Unable to find liblustreapi."
-        print_help()
-        exit(1)
-        
-def print_help():
-    print ""
-    print ("This modules requires the liblustreapi C library.\n"
-           "It should be installed as part of the lustre client package.\n" 
-           "If the library is installed in a non standard location,\n"
-		   "use the following option to setup.py to point to the\n"
-		   "libary location:\n"
-		   "\n"
-		   "--with-liblustre=/path/to/library"
-		   )
-    print ""
+        print """
+WARNING: Unable to find liblustreapi C library.
+It should be installed as part of the lustre client package.
+
+Continuing, but pcp will be build without lustre features.
+
+If the library is installed in a non standard location,
+use the following option to setup.py to point to the
+libary location:
+
+--with-liblustre=/path/to/library
+"""
 
 def convert_liblustre(lib_location):
     """Convert liblustre.a to .so
@@ -156,24 +154,18 @@ class mybuild_py(build):
         
 
 # Parse our optional argument
-liblustre_loc = None
+LIBLUSTRE_LOC = None
 for arg in sys.argv:
     if "--with-liblustre=" in arg:
-       	liblustre_loc = arg.split("=")[1]
-       	sys.argv.remove(arg)
+        LIBLUSTRE_LOC = arg.split("=")[1]
+        sys.argv.remove(arg)
 
 # Grab version out of git, or the dist tarball.
 version = update_version()
 
-# Check if the system supplies liblustreapi.so
-# If not, we need to package our own.
-liblocation = ctypes.util.find_library("lustreapi")
-if liblocation:
-    print "Using system liblustreapi.so from %s" % liblocation
-    lustre_packagedata = {}
-else:
-    lustre_packagedata = {"pcplib": ["liblustreapi.so"]}
-
+# We may not have a liblustreapi.so to ship, but
+# it looks like setuptools silently ignores missing
+# data files, so the right thing happens.
 setup(name = "pcp",
       cmdclass={"build": mybuild_py, 
                 },
@@ -184,5 +176,5 @@ setup(name = "pcp",
       author_email = "gmpc@sanger.ac.uk",
       scripts = ["pcp"],
       packages=["pcplib"],
-      package_data = lustre_packagedata,
+      package_data = {"pcplib": ["liblustreapi.so"]}
 )

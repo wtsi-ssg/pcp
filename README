@@ -17,7 +17,11 @@ pcp requires the following:
 mpi4py 
 http://mpi4py.scipy.org/
 
-Lustre C api library, liblustreapi.so or liblustreapi.a
+and optionally the Lustre C api library, 
+
+liblustreapi.so or liblustreapi.a 
+
+This is usually part of the lustre client package.
 
 
 Installation
@@ -33,20 +37,25 @@ by running:
 
 python setup.py install --user
 
+
+Lustre functionality
+--------------------
+
+pcp requires the lustreapi library for its lustre features. If the library
+is not detected during installation or executution, pcp will disable the
+lustre functions and issue a warning.
+
 If you have the lustreapi libraries install in a non-standard location, you
 can use the following option to setup.py 
 
 --with-liblustre=/path/to/library
-
-
-liblustreapi
-------------
 
 lustre clients prior to v 2.3 shipped with a static version of liblustreapi 
 rather than a dynamic one. pcp requires a dynamic library. The build process 
 will look for liblustreapi.so first.  If it does not find one, it will look for
 liblustreapi.a and then convert it into a shared library. The shared library
 will be installed alongside the python module.
+
 
 Manual liblustreapi installation
 --------------------------------

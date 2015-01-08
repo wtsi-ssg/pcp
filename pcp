@@ -40,9 +40,14 @@ import math
 import random
 import signal
 import gzip
-
 from pcplib import parallelwalk
-from pcplib import lustreapi
+
+try:
+    from pcplib import lustreapi
+    WITHLUSTRE = True
+except:
+    WITHLUSTRE = False
+
 from pcplib import statfs
 from pcplib import safestat
 from collections import deque
@@ -284,6 +289,12 @@ def sanitycheck(sourcedir, destdir):
         print
         Abort()
         
+    if not WITHLUSTRE and (LSTRIPE or FORCESTRIPE or NODIRSTRIPE or MINSTRIPESIZE):
+        print
+        print ("Error: Lustre stripe options specified but lustreapi is not available.")
+        print
+        Abort()
+
     # If we are using lustre stripe options, check that the source and
     # destination filesystems are lustre.
     if LSTRIPE:
@@ -1287,6 +1298,9 @@ try:
     if rank == 0:
         # master process
         print "Starting %i processes." % workers
+
+        if not WITHLUSTRE:
+            print "lustreapi is not available; disabling lustre specific features."
 
         if resumed:
             print ("Resuming a copy from a checkpoint. Command line parameters"
