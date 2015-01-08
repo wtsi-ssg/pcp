@@ -32,7 +32,7 @@ Install pcp using the usual distutils method:
 python setup.py build
 python setup.py install #  usually requires root access
 
-If running as a non priviliged user, you can install in your home directory 
+If running as a non privileged user, you can install in your home directory 
 by running:
 
 python setup.py install --user
@@ -42,7 +42,7 @@ Lustre functionality
 --------------------
 
 pcp requires the lustreapi library for its lustre features. If the library
-is not detected during installation or executution, pcp will disable the
+is not detected during installation or execution, pcp will disable the
 lustre functions and issue a warning.
 
 If you have the lustreapi libraries install in a non-standard location, you
@@ -179,7 +179,7 @@ update copy, failures and checkpoints
 -------------------------------------
 
 It is only safe to run update copies after an initial file copy has completed
-sucessfully. You should NOT use an update copy to restart a file transfer if
+successfully. You should NOT use an update copy to restart a file transfer if
 if the original copy has failed. pcp only uses files mtimes, and not file
 contents to decide whether a file needs updating. Any partially transferred
 files will be left as is and not re-copied.
