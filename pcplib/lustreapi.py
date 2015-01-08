@@ -19,7 +19,9 @@ gcc -shared -o liblustreapi.so *.o
 import ctypes
 import ctypes.util
 import os
-import shutil
+import select
+import sys
+
 
 import pkg_resources
 try:
@@ -138,7 +140,6 @@ def getstripe(filename):
             stripeobj.stripeoffset = -1
     return(stripeobj)
 
-    
 def setstripe(filename, stripeobj=None, stripesize=0, stripeoffset=-1,
               stripecount=1):
     """Sets the striping on an existing directory, or create a new empty file
@@ -177,11 +178,48 @@ def setstripe(filename, stripeobj=None, stripesize=0, stripeoffset=-1,
         stripeoffset = stripeobj.stripeoffset
         stripecount = stripeobj.stripecount
 
+
+    # Capture the lustre error messages, These get printed to stderr via 
+    # liblusteapi, and so we need to intercept them.
+
+    message = captureStderr()
+
     fd = lustre.llapi_file_open(filename, flags, mode, stripesize,
                                 stripeoffset, stripecount, stripe_pattern)
+    message.readData()
+    message.stopCapture()
+
     if fd < 0:
         err = 0 - fd
         raise IOError(err, os.strerror(err))
     else:
         os.close(fd)
         return(0)
+
+
+class captureStderr():
+    """This class intercepts stderr and stores any output"""
+    def __init__(self):
+        self.pipeout, self.pipein = os.pipe()
+        self.oldstderr = os.dup(2)
+        os.dup2(self.pipein, 2)
+        self.contents=""
+
+    def __str__(self):
+        return (self.contents)
+
+    def readData(self):
+        """Read data from stderr until there is no more."""
+        while self.checkData():
+            self.contents += os.read(self.pipeout, 1024)
+            
+    def checkData(self):
+        """Check to see if there is any data to be read."""
+        r, _, _ = select.select([self.pipeout], [], [], 0)
+        return bool(r)
+
+    def stopCapture(self):
+        """Restore the original stderr"""
+        os.dup2(self.oldstderr, 2)
+        os.close(self.pipeout)
+        os.close(self.pipein)
