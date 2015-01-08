@@ -45,7 +45,7 @@ pcp requires the lustreapi library for its lustre features. If the library
 is not detected during installation or execution, pcp will disable the
 lustre functions and issue a warning.
 
-If you have the lustreapi libraries install in a non-standard location, you
+If you have the lustreapi libraries installed in a non-standard location, you
 can use the following option to setup.py 
 
 --with-liblustre=/path/to/library
