@@ -17,7 +17,11 @@ pcp requires the following:
 mpi4py 
 http://mpi4py.scipy.org/
 
-Lustre C api library, liblustreapi.so or liblustreapi.a
+and optionally the Lustre C api library, 
+
+liblustreapi.so or liblustreapi.a 
+
+This is usually part of the lustre client package.
 
 
 Installation
@@ -28,25 +32,30 @@ Install pcp using the usual distutils method:
 python setup.py build
 python setup.py install #  usually requires root access
 
-If running as a non priviliged user, you can install in your home directory 
+If running as a non privileged user, you can install in your home directory 
 by running:
 
 python setup.py install --user
 
-If you have the lustreapi libraries install in a non-standard location, you
+
+Lustre functionality
+--------------------
+
+pcp requires the lustreapi library for its lustre features. If the library
+is not detected during installation or execution, pcp will disable the
+lustre functions and issue a warning.
+
+If you have the lustreapi libraries installed in a non-standard location, you
 can use the following option to setup.py 
 
 --with-liblustre=/path/to/library
-
-
-liblustreapi
-------------
 
 lustre clients prior to v 2.3 shipped with a static version of liblustreapi 
 rather than a dynamic one. pcp requires a dynamic library. The build process 
 will look for liblustreapi.so first.  If it does not find one, it will look for
 liblustreapi.a and then convert it into a shared library. The shared library
 will be installed alongside the python module.
+
 
 Manual liblustreapi installation
 --------------------------------
@@ -71,13 +80,41 @@ parallel.
 
 pcp has a number of useful options; use pcp -h to see a description.
 
+The program runs in three phases:
+
+In phase I, the source directory tree is crawled, the destination source 
+tree is created and files are marked for copying depending on the runtime
+parameters (see below).
+
+In phase II, the files themselves are copied, and optionally checksummed.
+
+If the "preserve" option has been selected,  phase III runs and directory 
+timestamps are copied.
+
+
+Chunking
+--------
+
+pcp will split files up into 500MB chunks, which can then be copied in 
+parallel. Files smaller than the chunk size will be copied in one go. You can 
+alter the chunk size with the -b flag. The size is in megabytes. For optimal 
+performance the chunk size should be a whole multiple of the lustre stripe size
+(typically 1MB) and lustre block size (typically 2MB).
+
+You can disable the chunk copy feature by setting the chunk size to 0.
+
+
 Checksum
 --------
 
 If run with the -c flag, pcp will md5 checksum files after they are copied.
-In order to minimize the risk of checksumming cached data rather than data on 
+In order to minimize the risk of checksumming cached data, rather than data on 
 disk, pcp runs the md5 calculation on a different MPI rank to the one that did 
-the copy and uses posix_fadvise to tall the kernel not to cache files.
+the copy and uses posix_fadvise to tell the kernel not to cache files.
+
+If a file was copied in chunks, the md5 checksum reported is for the individual
+chunk, not the whole file.
+
 
 lustre striping
 ---------------
@@ -102,12 +139,23 @@ If -ld is specified, destination directories will not be striped. (The contents
 themselves may still be striped).
 
 
+Update copy
+-----------
+
+If run with the -u flag, pcp will only copy a file if the source file is
+newer than the destination file (mtime), or if the destination files does not
+exist. Note there are some potential pitfalls to using update copies (see
+below).
+
+
 Checkpointing
 -------------
 
-pcp support serveral checkpointing methods. The checkpoint allows a copy,
-interrupted for any reason, to be restarted. Files which were in the process of
-being copied will be recopied in their entirety.
+pcp has checkpoint support. It allows a copy,interrupted for any reason, to be
+safely restarted.
+
+Note that checkpoints will only be taken once the program has entered phase II
+(copy) stage.
 
 If you specify a dumpfile with -K, a checkpoint will be written every 60 
 minutes. The checkpoint period can be varied with the -Km option. If the 
@@ -123,8 +171,26 @@ To resume from checkpoint, start pcp with the -R <dumpfile> option. All pcp
 command line parameters will be taken from the dumpfile; any other command 
 line arguments you give to pcp will be ignored.
 
-Note that you can safely resume a checkpoint with a different number of 
-processes than the original.
+Note that you can safely resume a checkpoint using a different number of 
+MPI processes than the original.
+
+
+update copy, failures and checkpoints
+-------------------------------------
+
+It is only safe to run update copies after an initial file copy has completed
+successfully. You should NOT use an update copy to restart a file transfer if
+if the original copy has failed. pcp only uses files mtimes, and not file
+contents to decide whether a file needs updating. Any partially transferred
+files will be left as is and not re-copied.
+
+In this situation, you should restart the failed copy from a checkpoint
+instead. The checkpoint/restore process ensures that  partially transferred
+files are re-copied.
+
+It is also safe to restart a failed update copy from a checkpoint. However, any
+modifications made to the source tree after the initial copy was started will
+be ignored.
 
 
 Other Useful Options
@@ -133,8 +199,8 @@ Other Useful Options
 A dead worker timeout can be specified with -d; if workers do not respond 
 within timeout seconds of the job starting, the job will terminate.
 
-If run with -p, pcp will attempt to preserve the ownership, permissions and 
-timestamps of the copied files.
+If run with -p (preserve), pcp will attempt to preserve the ownership, 
+permissions and timestamps of the copied files.
 
 
 Invocation
