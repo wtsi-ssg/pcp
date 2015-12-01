@@ -40,7 +40,6 @@ import math
 import random
 import signal
 import gzip
-from pcplib import parallelwalk
 
 try:
     from pcplib import lustreapi
@@ -48,6 +47,7 @@ try:
 except:
     WITHLUSTRE = False
 
+from pcplib import parallelwalk
 from pcplib import statfs
 from pcplib import safestat
 from collections import deque
