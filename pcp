@@ -308,7 +308,7 @@ def sanitycheck(sourcedir, destdir):
     # The destination might not exist yet, so walk up the path until we find the
     # mountpoint.
     if LSTRIPE or FORCESTRIPE:
-        path = os.path.realpath(destdir)
+        path = realdest
         while not os.path.ismount(path):
             path = os.path.dirname(path)
         fstype = statfs.fstype(path)
