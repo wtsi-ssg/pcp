@@ -1216,11 +1216,12 @@ class copydirtree(parallelwalk.ParallelWalk):
 		return()
             try:
                 srcstat = safestat.safestat(filename)
-            except OSError, error:
-                if error.errno == errno.ENOENT:
-                    srcstat = None
-                else:
-                    raise
+            except:
+                # We can't access the source file, so skip it:
+		print "Skipping source file '%s':" % filename,
+		print os.strerror(error.errno)
+		WARNINGS += 1
+                return()
             # Decide whether to copy srcfile, hard link reffile or keep dstfile:
             if ( dststat is not None and
               srcstat.st_mode == dststat.st_mode and
