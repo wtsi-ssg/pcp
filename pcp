@@ -194,6 +194,14 @@ machines as possible to prevent local network bottlenecks.
                         type=int)
     parser.add_argument("-g", help="only copy files matching glob",
                         default=None)
+    parser.add_argument("-i",
+                        help=("Create incremental backup with hard links to PREVBKUP."
+                              "Files are compared by mode, mtime and size."
+                              "If a source file matches the corresponding file in directory PREVBKUP,"
+                              "the file in PREVBKUP is hard linked to the destination."
+                              "Otherwise a source file with no matching destination file"
+                              "is copied from source to destination."),
+                        type=str, metavar=PREVBKUP, default=None)
     parser.add_argument("-n", "--dry-run",
                         help="perform a trial run with no copies made",
                         action="store_true", default=False)
@@ -1161,21 +1169,89 @@ class copydirtree(parallelwalk.ParallelWalk):
     """Walk the source directory tree in parallel, creating the destination tree
     as we go. Return the list of files we encountered."""
     def ProcessFile(self, filename):
+        global WARNINGS
         self.results[2] += 1
         if UPDATE:
-            # check to see if the destination exists
+            # Get mtime of destination file:
             destination = mungePath(sourcedir, destdir, filename)
             try:
                 dststat = safestat.safestat(destination)
-            # We can't access the file at the destination, so copy it.
             except OSError, error:
+                # We can't access the file at the destination, so copy it.
                 self.results[1].append(filename)
                 return()
-            srcstat = safestat.safestat(filename)
-            # source is newer, so copy the file
+            # Get mtime of source file:
+            try:
+                srcstat = safestat.safestat(filename)
+            except:
+                # We can't access the source file, so skip it:
+		print "Skipping source file '%s':" % filename,
+		print os.strerror(error.errno)
+		WARNINGS += 1
+                return()
+            # If source is newer, queue the file for copying:
             if srcstat.st_mtime > dststat.st_mtime:
                 self.results[1].append(filename)
+        elif PREVBKUP is not None:
+            # Get attributes of files from sourcedir, destdir and previous backup:
+            dstfile = mungePath(sourcedir, destdir, filename)
+            try:
+                dststat = safestat.safestat(dstfile)
+            except OSError, error:
+                if error.errno == errno.ENOENT:
+                    dststat = None
+                else:
+                    raise
+	    reffile = mungePath(sourcedir, PREVBKUP, filename)
+	    try:
+		refstat = safestat.safestat(reffile)
+	    except OSError, error:
+		if error.errno == errno.ENOENT:
+		    refstat = None
+		else:
+		    raise
+	    if dststat is None and refstat is None:
+		# No alternative copies exist, so queue srcfile for copying:
+		self.results[1].append(filename)
+		return()
+            try:
+                srcstat = safestat.safestat(filename)
+            except OSError, error:
+                if error.errno == errno.ENOENT:
+                    srcstat = None
+                else:
+                    raise
+            # Decide whether to copy srcfile, hard link reffile or keep dstfile:
+            if ( dststat is not None and
+              srcstat.st_mode == dststat.st_mode and
+              srcstat.st_uid_t == dststat.st_uid_t and
+              srcstat.st_gid_t == dststat.st_gid_t and
+              srcstat.st_mtime == dststat.st_mtime and
+              srcstat.st_size == dststat.st_size ):
+                # src and dest seem to match, keep existing dstfile:
+                return()
+            elif ( refstat is not None and
+              srcstat.st_mode == refstat.st_mode and
+              srcstat.st_uid_t == refstat.st_uid_t and
+              srcstat.st_gid_t == refstat.st_gid_t and
+              srcstat.st_mtime == refstat.st_mtime and
+              srcstat.st_size == refstat.st_size and
+              not DRYRUN ):
+                # src and ref seem to match, create hard link:
+                if dststat is None:
+                    os.link(reffile, dstfile)
+                else:
+                    os.remove(dstfile)
+                    os.link(reffile, dstfile)
+            else: 
+                # Queue srcfile for copying,
+                # removing dstfile if copying could modify another hard linked file:
+                if ( dststat is not None and
+                  dststat.st_nlink > 1 ):
+                    os.remove(dstfile)
+                self.results[1].append(filename)
         else:
+            # Unconditionally queue srcfile for copying:
             self.results[1].append(filename)
         return()
 
@@ -1285,6 +1361,10 @@ try:
     MD5REMAINS = 0 # remaining number of items to md5.
     sourcedir = args.SOURCE.rstrip(os.path.sep) # source
     destdir = args.DEST.rstrip(os.path.sep)  # destination
+    if args.i is None:
+        PREVBKUP = None
+    else:
+        PREVBKUP = args.i.rstrip(os.path.sep) # reference for hard linking unmodified files
     glob = args.g    # only copy files matching glob
     UPDATE = args.u # Are we doing an update copy?
     CHUNKSIZE = 1024 * 1024 * args.b
