@@ -63,6 +63,7 @@ lustre.llapi_file_get_stripe.argtypes = [ctypes.c_char_p, lov_user_md_v1_p]
 lustre.llapi_file_open.argtypes = [ctypes.c_char_p, ctypes.c_int,
                                    ctypes.c_int, ctypes.c_ulong, ctypes.c_int,
                                    ctypes.c_int, ctypes.c_int]
+lustre.llapi_lov_get_uuids.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
 
 class stripeObj:
     """
@@ -98,8 +99,27 @@ class stripeObj:
             return(True)
         else:
             return(False)
-    
-    
+
+def ostcount(filename):
+    """Returns number of OSTs on the filesystem hosting a file or directory.
+
+    Arguments:
+        filename: The name of a file or directory to query.
+
+    Returns:
+        An integer.
+
+    """
+    fd = os.open(filename,os.O_RDONLY)
+    count = ctypes.c_int()
+    try:
+        err = lustre.llapi_lov_get_uuids(fd, None, ctypes.byref(count))
+        if err != 0:
+            raise IOError(err, os.strerror(err))
+        return count.value
+    finally:
+        os.close(fd)
+
 def getstripe(filename):
     """Returns a stripeObj containing the stipe information of filename.
 

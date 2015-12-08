@@ -53,6 +53,7 @@ from pcplib import safestat
 from collections import deque
 from mpi4py import MPI
 import pkg_resources
+import errno
 
 try:
     __version__ = pkg_resources.require("pcp")[0].version
@@ -163,14 +164,15 @@ This program traverses a directory tree and copies files in the tree in
 parallel. It does not copy individual files in parallel. It should be invoked
 via mpirun.
 
-If run with the -l flag or -lf flags pcp will be stripe aware. -l will cause
+If run with the -l flag or -lf flags, pcp will be lustre aware. -l will cause
 stripe information to be copied from the source files and directories. -lf will 
-cause all files and directories on the destination to be striped, regardless of
-the striping on the source.
+cause all files on the destination to be striped regardless of the source.
 
-Striping behaviour can be further modified with -ls and -ld. A minimum file size
-can be set with -ls. Files below this size will not be striped, regardless of
-the souce striping. -ld will cause all directories to be unstriped.
+Striping behaviour can be further modified with -ls, -ld and -lc.
+A minimum file size can be set with -ls, and smaller files will not be striped.
+-ld will cause directories to use default or inherited stripe parameters.
+-lc enables a variable stripe count for use by option -lf, so that the
+number of stripes can be made proportional to the size of each file.
 
 -l requires that the source and destination filesystems must be lustre.
 -lf can be used when only the destination filesystem is lustre.
@@ -212,15 +214,22 @@ machines as possible to prevent local network bottlenecks.
     group.add_argument("-l", help="copy lustre stripe information",
                        default=False, action="store_true")
     group.add_argument("-lf",
-                       help=("Force striping of all files and directories. Can be combined"
-                             " with -ls and -ld."), default=False, action="store_true")
+                       help=("Force striping of all files and directories."
+                             " Can be combined with -ls, -ld and -lc."),
+                             default=False, action="store_true")
     parser.add_argument("-ls",
-                        help=("do not stripe files smaller than B "
-                              "bytes. Implies -l. Size can be suffixed"
-                              "with k,M,G,T,P"), metavar="B", default=0)
+                        help=("do not stripe files smaller than LS bytes."
+                              " Size can be suffixed with k,M,G,T,P."),
+                        metavar="LS", default=0)
     parser.add_argument("-ld",
-                        help="Do not stripe diretories.", default=False,
+                        help="Do not set stripe parameters on directories", default=False,
                         action="store_true")
+    parser.add_argument("-lc",
+                        help=("When striping with option '-lf',"
+                              " set stripe count of each file so that each OST"
+                              " stores a slab of about LC bytes (or k,M,G,T,P)."
+                              " By default, files are striped over all available OSTs."),
+                              metavar="LC", default=0)
     parser.add_argument("-u",
                         help="Copy only when the source file is newer than the destination file,"
                         " or the destination file is missing.", default=False, action="store_true")
@@ -259,8 +268,15 @@ machines as possible to prevent local network bottlenecks.
     if args.ls != 0:
         args.ls = SIConvert(args.ls)
         if args.ls == -1:
-            print "Error: incorrect size specification."
+            print "Error: incorrect size specification for -ls."
             Abort()
+
+    if args.lc != 0:
+        args.lc = SIConvert(args.lc)
+        if args.lc == -1:
+            print "Error: incorrect size specification for -lc."
+            Abort()
+
     return(args)
 
 def Abort():
@@ -289,7 +305,7 @@ def sanitycheck(sourcedir, destdir):
         print
         Abort()
         
-    if not WITHLUSTRE and (LSTRIPE or FORCESTRIPE or NODIRSTRIPE or MINSTRIPESIZE):
+    if not WITHLUSTRE and (LSTRIPE or FORCESTRIPE):
         print
         print ("Error: Lustre stripe options specified but lustreapi is not available.")
         print
@@ -425,30 +441,54 @@ def md5copy(src, dst, blksize, MD5SUM, chunk):
     return(digest, bytescopied)
 
 def createstripefile(src, dst, size):
-    """Create a file dst with the lustre stripe information copied from src, unless 
-    filesystem is < size, in which case we set the striping to 1."""
-    stripestatus = 0
-    if LSTRIPE:
+    """Create a file dst with the lustre stripe information either
+    copied from src or calculated from file size."""
+    assert(LSTRIPE or FORCESTRIPE)
+    if size < MINSTRIPESIZE:
+        stripecount = 1
+        stripestatus = -1  # File is too small to stripe
+        stripesize = 0     # Use default stripe size
+        stripeoffset = -1  # MDS chooses OST
+    elif LSTRIPE:
         layout = lustreapi.getstripe(src)
-    if (LSTRIPE and layout.isstriped()) or FORCESTRIPE:
-        if size < MINSTRIPESIZE:
-            stripestatus = -1
-            count = 1
+        stripecount = min(layout.stripecount, MAXSTRIPES)
+        if stripecount == 1:
+            stripestatus = 0  # unstriped
         else:
-            stripestatus = 1
-            count = -1
+            stripestatus = 1  # striped
+        stripesize = layout.stripesize
+        # Copying offsets would cause load/space imbalance,
+        # so allow MDS to choose offset:
+        stripeoffset = -1
+    elif FORCESTRIPE:
+	if STRIPESLAB > 0:
+	    # Preferred number of OSTs to stripe across increases with file size:
+	    stripecount = min(1 + int(size/STRIPESLAB), MAXSTRIPES)
+	else:
+	    # Stripe across all OSTs:
+	    stripecount = -1
+        if stripecount == 1:
+            stripestatus = 0  # unstriped
+        else:
+            stripestatus = 1  # striped
+        stripesize = 0    # Use default stripe size
+        stripeoffset = -1 # MDS chooses offset
     else:
-        count = 1
+        # This should never be reached
+        raise(NotImplementedError)
+
     if not DRYRUN:
-        try:
-            lustreapi.setstripe(dst, stripecount=count)
-        except IOError, error:
-            if error.errno == 17:
-                # file exists; blow it away and try again...
-                os.remove(dst)
-                lustreapi.setstripe(dst, stripecount=count)
-            else:
-                raise
+	try:
+	    lustreapi.setstripe(dst, stripecount=stripecount,
+		stripesize=stripesize, stripeoffset=stripeoffset)
+	except IOError, error:
+	    if error.errno == errno.EEXIST:
+		# file exists; blow it away and try again...
+		os.remove(dst)
+	        lustreapi.setstripe(dst, stripecount=stripecount,
+		    stripesize=stripesize, stripeoffset=stripeoffset)
+	    else:
+		raise
 
     return(stripestatus)
 
@@ -955,34 +995,50 @@ def ShutdownWorkers(starttime):
     print "Warnings %i" % WARNINGS
 
 def copyDir(sourcedir, destdir):
-    """Create destdir, setting stripe attributes to be the
-    same as sourcedir."""
+    """Create destdir, optionally copying stripe attributes from sourcedir."""
     global WARNINGS
+    assert (not DRYRUN)
 
-    # Don't worry is the destination directory already exists
-
+    # Don't worry if the destination directory already exists
     try:
         os.mkdir(destdir)
     except OSError, error:
-        if error.errno != 17:
+        if error.errno != errno.EEXIST:
             print "cannot create `%s':" % destdir,
             print os.strerror(error.errno)
             WARNINGS += 1
 
-    try:
-        if LSTRIPE or FORCESTRIPE:
-            layout = lustreapi.getstripe(sourcedir)
-            if ( layout.isstriped or FORCESTRIPE ) and not NODIRSTRIPE:
-                lustreapi.setstripe(destdir, stripecount=-1)
-            else:
-                lustreapi.setstripe(destdir, stripecount=1)
-
-    except IOError, error:
-        if error.errno != 13:
-            raise
+    if NODIRSTRIPE or not (LSTRIPE or FORCESTRIPE):
+        # Use default or inherited stripe settings:
+        return()
+    elif LSTRIPE:
+        layout = lustreapi.getstripe(sourcedir)
+        stripecount = min(layout.stripecount, MAXSTRIPES)
+        stripesize = layout.stripesize
+        stripeoffset = -1  # Allow MDS to balance load and space across OSTs
+    elif FORCESTRIPE:
+        if STRIPESLAB > 0:
+            # Future file sizes are unknown,
+            # so size-dependent stripe count cannot be calculated.
+            # Fall back to unstriped files:
+            stripecount = 1
         else:
-            print "R%i WARNING: Unable to set striping on %s" \
-                % (rank, destdir)
+            # All files are unconditionally striped across all OSTs:
+            stripecount = -1
+        stripesize = 0     # Default stripe size
+        stripeoffset = -1  # MDS chooses offset
+    else:
+        # This should never be reached
+        raise(NotImplementedError)
+
+    try:
+        lustreapi.setstripe(destdir, stripecount=stripecount,
+          stripesize=stripesize, stripeoffset=stripeoffset)
+    except IOError, error:
+        if error.errno == errno.EACCES:
+            print "R%i WARNING: Not permitted to set striping on %s" % (rank, destdir)
+        else:
+            raise
 
 
 def fixupDirTimeStamp(sourcedir):
@@ -1273,8 +1329,9 @@ try:
     PRESERVE = args.p      # preserve permissions etc
     LSTRIPE = args.l       # preserve lustre information
     MINSTRIPESIZE = args.ls  # don't stripe for files smaller than this
-    FORCESTRIPE = args.lf   # Stripe all files regardless of source striping
-    NODIRSTRIPE = args.ld # Stripe all directories regardless of source striping
+    STRIPESLAB = args.lc   # slab size for stripe count calculation
+    FORCESTRIPE = args.lf  # Stripe all files regardless of source striping
+    NODIRSTRIPE = args.ld  # Do not stripe any directories regardless of source striping
     WARNINGS = 0 # number of warning
     VERBOSE = args.v    # Should we be verbose
     DUMPDB = args.K     # Checkpoint to this directory.
@@ -1314,26 +1371,43 @@ try:
 
         if DUMPDB:
             print "Will checkpoint every %i minutes to %s" %(args.Km, DUMPDB)
-        if LSTRIPE:
-            print "Will copy lustre stripe information."
 
         if args.b < INFINITY:
             print "Files larger than %i Mbytes will be copied in parallel chunks." %args.b
         else:
             print "Chunk copying disabled: files will be copied in one go."
 
-        if FORCESTRIPE:
-            print "Will force stripe all files."
+        if LSTRIPE:
+            print "Will copy lustre stripe information."
+        elif FORCESTRIPE:
+            if STRIPESLAB > 0:
+                print "Will force stripe files into slabs of about %s per OST." \
+                    % prettyPrint(STRIPESLAB)
+            else:
+                print "Will force stripe files across all destination OSTs."
         if (LSTRIPE or FORCESTRIPE) and NODIRSTRIPE:
             print "Will not stripe directories."
         if (LSTRIPE or FORCESTRIPE) and  MINSTRIPESIZE > 0:
             print "Will not stripe files smaller than %s" \
                 % prettyPrint(MINSTRIPESIZE)
+       
         if MD5SUM:
             print "Will md5 verify copies."
 
         sanitycheck(sourcedir, destdir)
+
+        # Rank 0 finds maximum number of stripes supported by destination:
+        if LSTRIPE or FORCESTRIPE:
+            MAXSTRIPES = lustreapi.ostcount(destdir)
+            print "Maximum number of destination stripes is %d." % MAXSTRIPES
+
         starttime = time.time()
+
+    # Broadcast maximum number of destination stripes from rank 0 to others:
+    if LSTRIPE or FORCESTRIPE:
+        if rank != 0:
+            MAXSTRIPES = None
+        MAXSTRIPES = comm.bcast(MAXSTRIPES, root=0)
 
     # All ranks take part in the scan
     if not resumed:
