@@ -201,7 +201,7 @@ machines as possible to prevent local network bottlenecks.
                               "the file in PREVBKUP is hard linked to the destination."
                               "Otherwise a source file with no matching destination file"
                               "is copied from source to destination."),
-                        type=str, metavar=PREVBKUP, default=None)
+                        type=str, metavar="PREVBKUP", default=None)
     parser.add_argument("-n", "--dry-run",
                         help="perform a trial run with no copies made",
                         action="store_true", default=False)
