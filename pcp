@@ -235,6 +235,9 @@ machines as possible to prevent local network bottlenecks.
     parser.add_argument("-Km",
                         help=("Checkpoint every N minutes."),
                         type=int, metavar="N", default=60)
+    parser.add_argument("-Kx",
+                        help=("Checkpoint before exit to retain history of transfer"),
+                        default=False, action="store_true")
 
     if len(sys.argv) == 1:
         parser.print_help()
@@ -1279,6 +1282,7 @@ try:
     VERBOSE = args.v    # Should we be verbose
     DUMPDB = args.K     # Checkpoint to this directory.
     DUMPINTERVAL = args.Km * 60 # Checkpoint period
+    DUMPEXIT = args.Kx  # Checkpoint before exit
     CHECKPOINTNOW = False
     TOTALROWS = 0 # The total number of files and chunks to be copied.
     COPYREMAINS = 0 # remaining number of items to copy.
@@ -1314,6 +1318,8 @@ try:
 
         if DUMPDB:
             print "Will checkpoint every %i minutes to %s" %(args.Km, DUMPDB)
+            if DUMPEXIT:
+                print "Will also checkpoint on exit."
         if LSTRIPE:
             print "Will copy lustre stripe information."
 
@@ -1374,6 +1380,12 @@ try:
             walltime = time.strftime("%H hrs %M mins %S secs",
                                      time.gmtime(endtime-starttime))
             print "Phase III Done. %s" %walltime
+
+        if DUMPDB and DUMPEXIT:
+	    print "Creating checkpoint of final state..."
+	    dumpDB(statedb, DUMPDB)
+	    print "Checkpoint done."
+
         exit(0)
 
     else:
