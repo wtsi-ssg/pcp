@@ -196,11 +196,11 @@ machines as possible to prevent local network bottlenecks.
                         default=None)
     parser.add_argument("-i",
                         help=("Create incremental backup with hard links to PREVBKUP."
-                              "Files are compared by mode, mtime and size."
-                              "If a source file matches the corresponding file in directory PREVBKUP,"
-                              "the file in PREVBKUP is hard linked to the destination."
-                              "Otherwise a source file with no matching destination file"
-                              "is copied from source to destination."),
+                              " Files are compared by mode, mtime and size."
+                              " If a source file matches the corresponding file in directory PREVBKUP,"
+                              " the file in PREVBKUP is hard linked to the destination."
+                              " Otherwise a source file with no matching destination file"
+                              " is copied from source to destination."),
                         type=str, metavar="PREVBKUP", default=None)
     parser.add_argument("-n", "--dry-run",
                         help="perform a trial run with no copies made",
