@@ -228,6 +228,9 @@ machines as possible to prevent local network bottlenecks.
     parser.add_argument("-R",
                         help=("Restart a copy from a checkpoint file DUMPFILE."),
                         type=str, metavar="DUMPFILE", default=None)
+    parser.add_argument("-Rv",
+                        help=("Verify previous copy from a checkpoint file DUMPFILE."),
+                        type=str, metavar="DUMPFILE", default=None)
 
     parser.add_argument("-K",
                        help=("Enable and write checkpoints to file DUMPFILE."),
@@ -249,12 +252,12 @@ machines as possible to prevent local network bottlenecks.
     if args.b == 0:
         args.b = INFINITY
 
-    if not args.SOURCE and  not args.R:
+    if not args.SOURCE and  not (args.R or args.Rv):
         print "You must specify a source directory!"
         parser.print_help()
         Abort()
 
-    if not args.DEST and  not args.R:
+    if not args.DEST and  not (args.R or args.Rv):
         print "You must specify a destination directory!"
         parser.print_help()
         Abort()
@@ -612,6 +615,7 @@ def DispatchWork(statedb):
     global COPYREMAINS
     global MD5REMAINS
     global TOTALROWS
+    global RVERRORS
 
     # Queue containing worker who are ready for work.
     idleworkers = deque()
@@ -623,19 +627,31 @@ def DispatchWork(statedb):
     TOTALROWS = statedb.execute \
         ("""SELECT COUNT(*) FROM FILECPY""").fetchone()[0]
 
-    COPYREMAINS = statedb.execute \
-        ("""SELECT COUNT(*) FROM FILECPY WHERE STATE == 0""").fetchone()[0]
-        
-    MD5REMAINS = statedb.execute \
-        ("""SELECT COUNT(*) FROM FILECPY WHERE STATE < ?""",(ENDSTATE,)).fetchone()[0]
-
-    if not MD5SUM:
-        MD5REMAINS = 0
+    if VERIFY:
+        COPYREMAINS = 0
+        MD5REMAINS = statedb.execute \
+        ("""SELECT COUNT(*) FROM FILECPY WHERE STATE == 4""").fetchone()[0]
+        for errfile, chunk in statedb.execute \
+          ("SELECT FILENAME, CHUNKS FROM FILECPY WHERE STATE < 4"):
+            RVERRORS += 1
+            destfile = mungePath(sourcedir, destdir, errfile)
+            if chunk < 0:
+                print "COPYFAIL:%s" % destfile
+            else:
+                print "COPYFAIL,%d:%s" % (chunk,destfile)
+    else:
+        COPYREMAINS = statedb.execute \
+            ("""SELECT COUNT(*) FROM FILECPY WHERE STATE == 0""").fetchone()[0]
+        if MD5SUM:
+	    MD5REMAINS = statedb.execute \
+	    ("""SELECT COUNT(*) FROM FILECPY WHERE STATE < ?""",(ENDSTATE,)).fetchone()[0]
+        else:
+            MD5REMAINS = 0
 
     # loop until we have no more work to send.
     while COPYREMAINS > 0 or MD5REMAINS > 0:
         # See if we need to checkpoint
-        if DUMPDB:
+        if DUMPDB and not VERIFY:
             if cptimer.read() > DUMPINTERVAL:
                 print "RO: Writing checkpoint to %s..." %DUMPDB,
                 dumpDB(statedb, DUMPDB)
@@ -643,7 +659,7 @@ def DispatchWork(statedb):
                 cptimer.reset()
                 cptimer.start()
 
-        if CHECKPOINTNOW:
+        if CHECKPOINTNOW and not VERIFY:
             if not DUMPDB:
                 dumpfile = "pcp_checkpoint.db"
             else:
@@ -671,29 +687,39 @@ def DispatchWork(statedb):
         # try for dispatch
         if len(idleworkers) > 0:
             worker = idleworkers.pop()
-            
-            # 2 workers is a special case; we can't do MD5sum or retries on
-            # a different nodes, as we only have 1 worker node.
-            if workers == 2:
-                lastrank = -1
-            else:
-                lastrank = worker
-            task = statedb.execute("""SELECT FILENAME, ID, CHUNKS FROM FILECPY WHERE STATE == 0 AND
-                                  LASTRANK <> ? ORDER BY SORTORDER LIMIT 1""",(lastrank, )).fetchone()
-            if task:
-                statedb.execute("""UPDATE FILECPY SET STATE = 1 WHERE ID = ?""",(task[1],))
-                msg = ("COPY", (task[0], task[1], task[2]))
-                comm.send(msg, dest=worker, tag=1)
-                continue
 
-            if MD5SUM:
-                task = statedb.execute("""SELECT FILENAME, ID, CHUNKS FROM FILECPY WHERE STATE == 2 AND
-                       LASTRANK <> ? ORDER BY SORTORDER LIMIT 1""",(lastrank, )).fetchone()
+            if VERIFY:
+                task = statedb.execute("SELECT FILENAME, ID, CHUNKS FROM FILECPY WHERE STATE == 4 ORDER BY SORTORDER LIMIT 1").fetchone()
                 if task:
-                    statedb.execute("""UPDATE FILECPY SET STATE = 3 WHERE ID = ?""",(task[1],))
+                    statedb.execute("""UPDATE FILECPY SET STATE = 5 WHERE ID = ?""",(task[1],))
                     msg = ("MD5", (task[0], task[1], task[2]))
                     comm.send(msg, dest=worker, tag=1)
                     continue
+
+            else:
+		# 2 workers is a special case; we can't do MD5sum or retries on
+		# a different nodes, as we only have 1 worker node.
+		if workers == 2:
+		    lastrank = -1
+		else:
+		    lastrank = worker
+		task = statedb.execute("""SELECT FILENAME, ID, CHUNKS FROM FILECPY WHERE STATE == 0 AND
+				      LASTRANK <> ? ORDER BY SORTORDER LIMIT 1""",(lastrank, )).fetchone()
+		if task:
+		    statedb.execute("""UPDATE FILECPY SET STATE = 1 WHERE ID = ?""",(task[1],))
+		    msg = ("COPY", (task[0], task[1], task[2]))
+		    comm.send(msg, dest=worker, tag=1)
+		    continue
+
+		if MD5SUM:
+		    task = statedb.execute("""SELECT FILENAME, ID, CHUNKS FROM FILECPY WHERE STATE == 2 AND
+			   LASTRANK <> ? ORDER BY SORTORDER LIMIT 1""",(lastrank, )).fetchone()
+		    if task:
+			statedb.execute("""UPDATE FILECPY SET STATE = 3 WHERE ID = ?""",(task[1],))
+			msg = ("MD5", (task[0], task[1], task[2]))
+			comm.send(msg, dest=worker, tag=1)
+			continue
+
             # There is work, but not for this worker. Send to the back of the queue
             idleworkers.appendleft(worker)
 
@@ -704,6 +730,7 @@ def processMD5(statedb, payload):
     global WARNINGS
     global COPYREMAINS
     global MD5REMAINS
+    global RVERRORS
 
     md5sum = payload[0]
     idx = payload[1]
@@ -716,7 +743,18 @@ def processMD5(statedb, payload):
     filename, attempt, srcmd5, chunk = statedb.execute("""SELECT FILENAME, ATTEMPTS, SRCMD5,
     CHUNKS FROM FILECPY WHERE ID = ?""", (idx,)).fetchone()
     if status == 0:
-        if srcmd5 == md5sum:
+        if VERIFY:
+            MD5REMAINS -= 1
+            statedb.execute("UPDATE FILECPY SET STATE = 6 WHERE ID = ?", (idx,))
+            if srcmd5 != md5sum:
+                RVERRORS += 1
+                destfile = mungePath(sourcedir, destdir, filename)
+                if chunk < 0:
+                    print "MD5FAIL:%s" % destfile
+                else:
+                    print "MD5FAIL,%d:%s" % (chunk,destfile)
+        
+        elif srcmd5 == md5sum:
             statedb.execute("""UPDATE FILECPY SET STATE = 4
                             WHERE ID = ?""", (idx,))
             MD5REMAINS -= 1
@@ -754,19 +792,29 @@ def processMD5(statedb, payload):
 
     else:
         # md5 calc failed due to a detected error.
-        attempt += 1
-        statedb.execute("""UPDATE FILECPY SET ATTEMPTS = ?, LASTRANK = ?, STATE = 2
-                        WHERE ID =?""",(attempt, workerrank, idx))
-        if attempt < MAXTRIES:
-            WARNINGS += 1
-            print ("R%i: %s WARNING: Error calculating destination"
-                   " md5sum of %s on attempt %i. Re-trying..." \
-                       %(workerrank, timestamp(), filename, attempt))
+        if VERIFY:
+            MD5REMAINS -= 1
+            statedb.execute("UPDATE FILECPY SET STATE = 6 WHERE ID = ?", (idx,))
+            RVERRORS += 1
+            destfile = mungePath(sourcedir, destdir, filename)
+            if chunk < 0:
+                print "READFAIL:%s" % destfile
+            else:
+                print "READFAIL,%d:%s" % (chunk,destfile)
         else:
-            # Retries exceeded.
-            print ("R%i %s ERROR: Max number of md5 attempts reached on %s."
-                   %(timestamp(), filename))
-            Abort()
+	    attempt += 1
+	    statedb.execute("""UPDATE FILECPY SET ATTEMPTS = ?, LASTRANK = ?, STATE = 2
+			    WHERE ID =?""",(attempt, workerrank, idx))
+	    if attempt < MAXTRIES:
+		WARNINGS += 1
+		print ("R%i: %s WARNING: Error calculating destination"
+		       " md5sum of %s on attempt %i. Re-trying..." \
+			   %(workerrank, timestamp(), filename, attempt))
+	    else:
+		# Retries exceeded.
+		print ("R%i %s ERROR: Max number of md5 attempts reached on %s."
+		       %(timestamp(), filename))
+		Abort()
     return()
 
 def processCopy(statedb, payload):
@@ -1235,6 +1283,7 @@ hostname = os.uname()[1]
 INFINITY = float("inf")
 STARTEDCOPY = False  # flag to see whether we can start checkpointing.
 resumed = False
+VERIFY = False
 # Signal handler to checkpoint on SIGUSR1
 signal.signal(signal.SIGUSR1, handler)
 
@@ -1260,17 +1309,24 @@ try:
         if args.R:
             statedb, args = restoreDB(args.R)
             resumed = True
+        elif args.Rv:
+            statedb, args = restoreDB(args.Rv)
+            if args.c:
+                VERIFY = True
+            else:
+                print "No verification possible - no checksums in checkpoint file"
+                Abort()
         else:
             resumed = False
             statedb = createDB()
             pargs = pickle.dumps(args)
             statedb.execute("""INSERT OR REPLACE INTO ARGUMENTS (ARGS, ID)
                     VALUES(?,1)""", (pargs,))
-    args, resumed  = distribArgs((args, resumed))
+    args, resumed, VERIFY  = distribArgs((args, resumed, VERIFY))
     if rank > 0:
         statedb = None
 
-    MD5SUM = args.c      # checksum copy
+    MD5SUM = args.c        # checksum copy
     DRYRUN = args.dry_run  # Dry run
     MAXTRIES = args.t      # number of retries on IO error
     PRESERVE = args.p      # preserve permissions etc
@@ -1287,6 +1343,8 @@ try:
     TOTALROWS = 0 # The total number of files and chunks to be copied.
     COPYREMAINS = 0 # remaining number of items to copy.
     MD5REMAINS = 0 # remaining number of items to md5.
+    global RVERRORS  # number of files that fail verification (with option -Rv)
+    RVERRORS = 0
     sourcedir = args.SOURCE.rstrip(os.path.sep) # source
     destdir = args.DEST.rstrip(os.path.sep)  # destination
     glob = args.g    # only copy files matching glob
@@ -1303,53 +1361,59 @@ try:
         # master process
         print "Starting %i processes." % workers
 
-        if not WITHLUSTRE:
-            print "lustreapi is not available; disabling lustre specific features."
-
-        if resumed:
-            print ("Resuming a copy from a checkpoint. Command line parameters"
+        if VERIFY:
+            print ("Verifying from a checkpoint. Command line parameters"
                    " will be taken from the checkpoint file.")
             print "SOURCE %s" %sourcedir
             print "DESTINATION %s" %destdir
-
-        if UPDATE:
-            print "Will only copy files if source is newer than destination"
-            print " or destination does not exist."
-
-        if DUMPDB:
-            print "Will checkpoint every %i minutes to %s" %(args.Km, DUMPDB)
-            if DUMPEXIT:
-                print "Will also checkpoint on exit."
-        if LSTRIPE:
-            print "Will copy lustre stripe information."
-
-        if args.b < INFINITY:
-            print "Files larger than %i Mbytes will be copied in parallel chunks." %args.b
         else:
-            print "Chunk copying disabled: files will be copied in one go."
+	    if not WITHLUSTRE:
+		print "lustreapi is not available; disabling lustre specific features."
 
-        if FORCESTRIPE:
-            print "Will force stripe all files."
-        if (LSTRIPE or FORCESTRIPE) and NODIRSTRIPE:
-            print "Will not stripe directories."
-        if (LSTRIPE or FORCESTRIPE) and  MINSTRIPESIZE > 0:
-            print "Will not stripe files smaller than %s" \
-                % prettyPrint(MINSTRIPESIZE)
-        if MD5SUM:
-            print "Will md5 verify copies."
+	    if resumed:
+		print ("Resuming a copy from a checkpoint. Command line parameters"
+		       " will be taken from the checkpoint file.")
+		print "SOURCE %s" %sourcedir
+		print "DESTINATION %s" %destdir
+
+	    if UPDATE:
+		print "Will only copy files if source is newer than destination"
+		print " or destination does not exist."
+
+	    if DUMPDB:
+		print "Will checkpoint every %i minutes to %s" %(args.Km, DUMPDB)
+		if DUMPEXIT:
+		    print "Will also checkpoint on exit."
+	    if LSTRIPE:
+		print "Will copy lustre stripe information."
+
+	    if args.b < INFINITY:
+		print "Files larger than %i Mbytes will be copied in parallel chunks." %args.b
+	    else:
+		print "Chunk copying disabled: files will be copied in one go."
+
+	    if FORCESTRIPE:
+		print "Will force stripe all files."
+	    if (LSTRIPE or FORCESTRIPE) and NODIRSTRIPE:
+		print "Will not stripe directories."
+	    if (LSTRIPE or FORCESTRIPE) and  MINSTRIPESIZE > 0:
+		print "Will not stripe files smaller than %s" \
+		    % prettyPrint(MINSTRIPESIZE)
+	    if MD5SUM:
+		print "Will md5 verify copies."
 
         sanitycheck(sourcedir, destdir)
         starttime = time.time()
 
     # All ranks take part in the scan
-    if not resumed:
+    if not (resumed or VERIFY):
         if rank == 0:
             print ""
             print "Starting phase I: Scanning and copying directory structure..."
         scantree(sourcedir, destdir, statedb)
 
     if rank == 0:
-        if not resumed:
+        if not (resumed or VERIFY):
             if glob:
                 totalfiles = statedb.execute("SELECT COUNT(*) FROM FILECPY").fetchone()[0]
                 results = statedb.execute("DELETE FROM FILECPY WHERE NOT FILENAME GLOB ?",
@@ -1362,6 +1426,8 @@ try:
         print ""
         if resumed:
             print "Resuming phase II: Copying files..."
+        elif VERIFY:
+            print "Verifying against checkpoint file ..."
         else:
             print "Starting phase II: Copying files..."
 
@@ -1370,29 +1436,38 @@ try:
 
         STARTEDCOPY = False
         ShutdownWorkers(starttime)
-        
-        if PRESERVE:
-            print
-            print "Starting phase III: Setting directory timestamps..."
-            starttime = time.time()
-            fixupDirTimeStamp(sourcedir)
-            endtime = time.time()
-            walltime = time.strftime("%H hrs %M mins %S secs",
-                                     time.gmtime(endtime-starttime))
-            print "Phase III Done. %s" %walltime
-
-        if DUMPDB and DUMPEXIT:
-	    print "Creating checkpoint of final state..."
-	    dumpDB(statedb, DUMPDB)
-	    print "Checkpoint done."
-
-        exit(0)
 
     else:
         # file copy workers
         ConsumeWork(sourcedir, destdir)
-    if PRESERVE:
-        fixupDirTimeStamp(sourcedir)
+
+    if VERIFY:
+        if RVERRORS > 0:
+            print "ERROR: %d files were not verified correctly." % RVERRORS
+            Abort()
+        else:
+            exit(0)
+
+    else:
+        if rank == 0:
+	    if PRESERVE:
+		print
+		print "Starting phase III: Setting directory timestamps..."
+		starttime = time.time()
+		fixupDirTimeStamp(sourcedir)
+		endtime = time.time()
+		walltime = time.strftime("%H hrs %M mins %S secs",
+					 time.gmtime(endtime-starttime))
+		print "Phase III Done. %s" %walltime
+
+	    if DUMPDB and DUMPEXIT:
+		print "Creating checkpoint of final state..."
+		dumpDB(statedb, DUMPDB)
+		print "Checkpoint done."
+        else:
+	    if PRESERVE:
+		fixupDirTimeStamp(sourcedir)
+
     exit(0)
 
 # We need to call MPI ABORT in our exception handler,
