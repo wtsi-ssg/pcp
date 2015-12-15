@@ -201,7 +201,9 @@ machines as possible to prevent local network bottlenecks.
     parser.add_argument("-t",
                         help="retry file copies N times in case of IO errors",
                         type=int, metavar="N", default=3)
-    parser.add_argument("-p", help="preserve ownership/permissions",
+    parser.add_argument("-p",
+                        help=("preserve permissions and timestamps,"
+                              " and ownership if running as root"),
                         default=False, action="store_true")
     parser.add_argument("-v", help="verbose", default=False,
                         action="store_true")
@@ -539,7 +541,7 @@ def ConsumeWork(sourcedir, destdir):
                 else:
                     status = 1
 
-            if status == 0 or status == 4 :
+            if status == 0 or status == 4 or status == 7:
                 bytescopied += size
                 filescopied += 1
             msg = ("COPYRESULT",( md5sum, idx, rank, status, speed,
@@ -785,7 +787,7 @@ def processCopy(statedb, payload):
                         WHERE ID = ?""",(idx, )).fetchone()
 
     # Copy is complete. 
-    if status == 0 or status == 4:
+    if status == 0 or status == 4 or status == 7:
         statedb.execute("""UPDATE FILECPY SET STATE = 2, SRCMD5 = ?, LASTRANK = ?,
                         SIZE = ? WHERE ID = ? """,(md5sum, workerrank, size, idx))
         COPYREMAINS -= 1
@@ -812,7 +814,13 @@ def processCopy(statedb, payload):
                 # unable to preserve permissions
                 WARNINGS += 1
                 print ("R%i: %s WARNING: unable to preserve"
-                       " attributes on %s") \
+                       " permissions on %s") \
+                       % (workerrank, timestamp(), filename)
+            elif status == 7:
+                # unable to preserve ownership
+                WARNINGS += 1
+                print ("R%i: %s WARNING: unable to preserve"
+                       " ownership of %s") \
                        % (workerrank, timestamp(), filename)
     # copy failed.
     elif status ==1:
@@ -1007,6 +1015,7 @@ def copyFile (src, dst, chunk):
     status = 4 # unable to preserve permissions
     status = 5 # file does not exist
     status = 6 # file is to be copied in chunks
+    status = 7 # unable to preserve ownership
     """
 
     md5sum = None
@@ -1047,12 +1056,20 @@ def copyFile (src, dst, chunk):
         else:
             if PRESERVE:
                 md5sum, bytescopied = md5copy(src, dst, blksize, MD5SUM, chunk)
+                if os.geteuid() == 0:
+		    try:
+			os.chown(dst, srcstat.st_uid, srcstat.st_gid)
+		    except OSError, error:
+                        # Cannot preserve the ownership
+			if error.errno == errno.EPERM:
+			    status = 7
+			else:
+			    raise
                 try:
-                    os.chown(dst, srcstat.st_uid, srcstat.st_gid)
                     os.chmod(dst, srcstat.st_mode)
                     os.utime(dst, (srcstat.st_atime, srcstat.st_mtime))
                 except OSError, error:
-                    # Can preserve the permissions
+                    # Cannot preserve the permissions or timestamps
                     if error.errno == errno.EPERM:
                         status = 4
                     else:
@@ -1082,13 +1099,15 @@ def copyFile (src, dst, chunk):
                 else:
                     raise
             if PRESERVE:
-                try:
-                    os.lchown(dst, srcstat.st_uid, srcstat.st_gid)
-                except OSError, error:
-                    if error.errno == errno.EPERM:
-                        status = 4
-                    else:
-                        raise
+                if os.geteuid() == 0:
+		    try:
+			os.lchown(dst, srcstat.st_uid, srcstat.st_gid)
+		    except OSError, error:
+                        # Cannot preserve the ownership
+			if error.errno == errno.EPERM:
+			    status = 7
+			else:
+			    raise
         return(0, 0, md5sum, 0, 0)
 
     # special files
@@ -1195,18 +1214,26 @@ class fixtimestamp(parallelwalk.ParallelWalk):
         stat = safestat.safestat(directoryname)
         newdir = mungePath(sourcedir, destdir, directoryname)
         if not DRYRUN:
+	    if os.geteuid() == 0:
+		try:
+		    os.chown(newdir, stat.st_uid, stat.st_gid)
+		except OSError, error:
+		    if error.errno == errno.EPERM:
+                        print "R%i WARNING: Unable to set ownership of %s" \
+                            % (rank, newdir)
+                        WARNINGS += 1
+		    else:
+			raise
             try:
                 os.chmod(newdir, stat.st_mode)
-                os.chown(newdir, stat.st_uid, stat.st_gid)
                 os.utime(newdir, (stat.st_atime, stat.st_mtime))
-
             except OSError, error:
-                if error.errno != errno.EPERM:
-                    raise
-                else:
+                if error.errno == errno.EPERM:
                     print "R%i WARNING: Unable to set permissions on %s" \
                         % (rank, newdir)
                     WARNINGS += 1
+                else:
+                    raise
 
 
 class MPIargparse(argparse.ArgumentParser):
