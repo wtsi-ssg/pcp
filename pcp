@@ -53,6 +53,7 @@ from pcplib import safestat
 from collections import deque
 from mpi4py import MPI
 import pkg_resources
+import errno
 
 try:
     __version__ = pkg_resources.require("pcp")[0].version
@@ -443,7 +444,7 @@ def createstripefile(src, dst, size):
         try:
             lustreapi.setstripe(dst, stripecount=count)
         except IOError, error:
-            if error.errno == 17:
+            if error.errno == errno.EEXIST:
                 # file exists; blow it away and try again...
                 os.remove(dst)
                 lustreapi.setstripe(dst, stripecount=count)
@@ -530,10 +531,10 @@ def ConsumeWork(sourcedir, destdir):
                 stripestatus = 0
                 # permission denied errors are not fatal. Skip over the file
                 # and carry on.
-                if error.errno == 13:
+                if error.errno == errno.EACCES:
                     status = 3
                 # File might have moved whilst we copied it!
-                elif error.errno == 2:
+                elif error.errno == errno.ENOENT:
                     status = 5
                 else:
                     status = 1
@@ -964,7 +965,7 @@ def copyDir(sourcedir, destdir):
     try:
         os.mkdir(destdir)
     except OSError, error:
-        if error.errno != 17:
+        if error.errno != errno.EEXIST:
             print "cannot create `%s':" % destdir,
             print os.strerror(error.errno)
             WARNINGS += 1
@@ -978,7 +979,7 @@ def copyDir(sourcedir, destdir):
                 lustreapi.setstripe(destdir, stripecount=1)
 
     except IOError, error:
-        if error.errno != 13:
+        if error.errno != errno.EACCES:
             raise
         else:
             print "R%i WARNING: Unable to set striping on %s" \
@@ -1052,7 +1053,7 @@ def copyFile (src, dst, chunk):
                     os.utime(dst, (srcstat.st_atime, srcstat.st_mtime))
                 except OSError, error:
                     # Can preserve the permissions
-                    if error.errno == 1:
+                    if error.errno == errno.EPERM:
                         status = 4
                     else:
                         raise
@@ -1075,7 +1076,7 @@ def copyFile (src, dst, chunk):
             try:
                 os.symlink(linkto, dst)
             except OSError, error:
-                if error.errno == 17:
+                if error.errno == errno.EEXIST:
                     os.remove(dst)
                     os.symlink(linkto, dst)
                 else:
@@ -1084,7 +1085,7 @@ def copyFile (src, dst, chunk):
                 try:
                     os.lchown(dst, srcstat.st_uid, srcstat.st_gid)
                 except OSError, error:
-                    if error.errno == 1:
+                    if error.errno == errno.EPERM:
                         status = 4
                     else:
                         raise
@@ -1200,7 +1201,7 @@ class fixtimestamp(parallelwalk.ParallelWalk):
                 os.utime(newdir, (stat.st_atime, stat.st_mtime))
 
             except OSError, error:
-                if error.errno != 1:
+                if error.errno != errno.EPERM:
                     raise
                 else:
                     print "R%i WARNING: Unable to set permissions on %s" \
