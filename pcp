@@ -1295,20 +1295,20 @@ class copydirtree(parallelwalk.ParallelWalk):
                 return()
             # Decide whether to copy srcfile, hard link reffile or keep dstfile:
             if ( dststat is not None and
-              srcstat.st_mode == dststat.st_mode and
-              srcstat.st_uid == dststat.st_uid and
-              srcstat.st_gid == dststat.st_gid and
-              srcstat.st_mtime == dststat.st_mtime and
-              srcstat.st_size == dststat.st_size ):
+                 srcstat.st_mode == dststat.st_mode and
+                 srcstat.st_uid == dststat.st_uid and
+                 srcstat.st_gid == dststat.st_gid and
+                 srcstat.st_mtime == dststat.st_mtime and
+                 srcstat.st_size == dststat.st_size ):
                 # src and dest seem to match, keep existing dstfile:
                 return()
             elif ( refstat is not None and
-              srcstat.st_mode == refstat.st_mode and
-              srcstat.st_uid == refstat.st_uid and
-              srcstat.st_gid == refstat.st_gid and
-              srcstat.st_mtime == refstat.st_mtime and
-              srcstat.st_size == refstat.st_size and
-              not DRYRUN ):
+                   srcstat.st_mode == refstat.st_mode and
+                   srcstat.st_uid == refstat.st_uid and
+                   srcstat.st_gid == refstat.st_gid and
+                   srcstat.st_mtime == refstat.st_mtime and
+                   srcstat.st_size == refstat.st_size and
+                   not DRYRUN ):
                 # src and ref seem to match, create hard link:
                 if dststat is None:
                     os.link(reffile, dstfile)
