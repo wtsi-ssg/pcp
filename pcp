@@ -1298,7 +1298,9 @@ class copydirtree(parallelwalk.ParallelWalk):
                  srcstat.st_mode == dststat.st_mode and
                  srcstat.st_uid == dststat.st_uid and
                  srcstat.st_gid == dststat.st_gid and
-                 srcstat.st_mtime == dststat.st_mtime and
+                 # Python truncates mtimes to ms resulting in incorrect comparision
+                 # on filesystems which support ns mtime resolution
+                 int(srcstat.st_mtime) == int(dststat.st_mtime) and
                  srcstat.st_size == dststat.st_size ):
                 # src and dest seem to match, keep existing dstfile:
                 return()
@@ -1306,7 +1308,7 @@ class copydirtree(parallelwalk.ParallelWalk):
                    srcstat.st_mode == refstat.st_mode and
                    srcstat.st_uid == refstat.st_uid and
                    srcstat.st_gid == refstat.st_gid and
-                   srcstat.st_mtime == refstat.st_mtime and
+                   int(srcstat.st_mtime) == int(refstat.st_mtime) and
                    srcstat.st_size == refstat.st_size and
                    not DRYRUN ):
                 # src and ref seem to match, create hard link:
