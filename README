@@ -193,6 +193,18 @@ modifications made to the source tree after the initial copy was started will
 be ignored.
 
 
+Incremental Backups
+-------------------
+
+pcp can be used to run incremental backups by using the -i flag to specify the
+location of a previous copy (PREVBKUP). If a source file matches the corresponding
+file in PREVBKUP (ie is unchanged since that copy was taken), the file in PREVBKUP
+is hard linked to the destination. If there is no file in PREVBKUP then the file
+is copied from the source to the destination. Doing incremental copies implies
+the -p flag, as pcp uses all of the file attributes to determine whether a file
+has changed or not.
+
+
 Other Useful Options
 --------------------
 
