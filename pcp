@@ -1312,11 +1312,20 @@ class copydirtree(parallelwalk.ParallelWalk):
                    srcstat.st_size == refstat.st_size and
                    not DRYRUN ):
                 # src and ref seem to match, create hard link:
-                if dststat is None:
-                    os.link(reffile, dstfile)
-                else:
-                    os.remove(dstfile)
-                    os.link(reffile, dstfile)
+                try:
+                    if dststat is None:
+                        os.link(reffile, dstfile)
+                    else:
+                        os.remove(dstfile)
+                        os.link(reffile, dstfile)
+                # If we run into errors hard linking, go for a normal copy.
+                except OSError as error:
+                    print "Unable to hard link %s -> %s" %(reffile, dstfile)
+                    print os.strerror(error.errno)
+                    print "Will attempt to copy file instead."
+                    WARNINGS += 1
+                    self.results[1].append(filename)
+                        
             else: 
                 # Queue srcfile for copying,
                 # removing dstfile if copying could modify another hard linked file:
